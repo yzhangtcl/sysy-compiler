@@ -3,44 +3,60 @@
 %option noinput
 
 %{
+
 #include <cstdlib>
-#include <cstring>
+#include <string>
+
+// 因为 Flex 会用到 Bison 中关于 token 的定义
+// 所以需要 include Bison 生成的头文件
 #include "sysy.tab.hpp"
+
 using namespace std;
+
 %}
 
-WS      [ \t\n\r]*
-ID      [a-zA-Z_][a-zA-Z0-9_]*
+/* 空白符和注释 */
+WhiteSpace    [ \t\n\r]*
+LineComment   "//".*
+BlockComment   \/\*([^\*]*|[\*]+[^\*\/])*[\*]+\/
+/* 标识符 */
+Identifier    [a-zA-Z_][a-zA-Z0-9_]*
 
-INT     0|[1-9][0-9]*
-HEX     0[xX][0-9a-fA-F]+
-OCT     0[0-7]+
-
-FLOAT   ([0-9]+\.[0-9]*|[0-9]*\.[0-9]+)([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+
+/* 整数字面量 */
+Decimal       [1-9][0-9]*
+Octal         0[0-7]*
+Hexadecimal   0[xX][0-9a-fA-F]+
 
 %%
 
-{WS}        ;
-"//".*      ;
+{WhiteSpace}    { /* 忽略, 不做任何操作 */ }
+{LineComment}   { /* 忽略, 不做任何操作 */ }
+{BlockComment}   { /* 忽略, 不做任何操作 */ }
 
-"int"       { return INT; }
-"float"     { return FLOAT_T; }
-"return"    { return RETURN; }
+"<="            { return LESS_EQ; }
+">="            { return GREAT_EQ; }
+"=="            { return EQUAL; }
+"!="            { return NOT_EQUAL;}
+"&&"            { return AND; }
+"||"            { return OR; }
 
-{ID}        {
-                yylval.str_val = strdup(yytext);
-                return IDENT;
-            }
+"void"          { return VOID; }
+"int"           { return INT; }
+"return"        { return RETURN; }
+"const"         { return CONST; }
+"if"            { return IF; }
+"else"          { return ELSE; }
+"while"         { return WHILE; }
+"break"         { return BREAK; }
+"continue"      { return CONTINUE; }
 
-{FLOAT}     {
-                yylval.str_val = strdup(yytext);
-                return FLOAT_CONST;
-            }
 
-{HEX}       { yylval.int_val = strtol(yytext, nullptr, 16); return INT_CONST; }
-{OCT}       { yylval.int_val = strtol(yytext, nullptr, 8);  return INT_CONST; }
-{INT}       { yylval.int_val = strtol(yytext, nullptr, 10); return INT_CONST; }
+{Identifier}    { yylval.str_val = new string(yytext); return IDENT; }
 
-.           { return yytext[0]; }
+{Decimal}       { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
+{Octal}         { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
+{Hexadecimal}   { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
+
+.               { return yytext[0]; }
 
 %%
