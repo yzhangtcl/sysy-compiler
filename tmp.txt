@@ -1,1 +1,5 @@
 docker run -it --rm -v /mnt/c/Users/14898/Desktop/compile:/root/compiler maxxing/compiler-dev bash
+docker run -it --rm -v /mnt/c/Users/14898/Desktop/compile:/root/compiler maxxing/compiler-dev \
+  autotest -koopa /root/compiler
+docker run -it --rm -v /mnt/c/Users/14898/Desktop/compile:/root/compiler maxxing/compiler-dev \
+  autotest -riscv /root/compiler

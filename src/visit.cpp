@@ -88,7 +88,6 @@ TempLabelManager tlm;
 // 访问 raw program
 void Visit(const koopa_raw_program_t &program) {
     // 执行一些其他的必要操作
-    
     // 访问所有全局变量
     Visit(program.values);
     // 访问所有函数
@@ -124,8 +123,6 @@ void Visit(const koopa_raw_slice_t &slice) {
 void Visit(const koopa_raw_function_t &func) {
     if(func->bbs.len == 0) return;
     fc.setFunc(func);
-
-    rvs.clear();
 
     rvs.append("  .text\n");
     rvs.append("  .globl " + string(func->name + 1) + "\n");
