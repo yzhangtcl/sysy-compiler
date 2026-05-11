@@ -32,24 +32,8 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 {WhiteSpace}    { /* 忽略, 不做任何操作 */ }
 {LineComment}   { /* 忽略, 不做任何操作 */ }
 {BlockComment}   { /* 忽略, 不做任何操作 */ }
-
-"<="            { return LESS_EQ; }
-">="            { return GREAT_EQ; }
-"=="            { return EQUAL; }
-"!="            { return NOT_EQUAL;}
-"&&"            { return AND; }
-"||"            { return OR; }
-
-"void"          { return VOID; }
 "int"           { return INT; }
 "return"        { return RETURN; }
-"const"         { return CONST; }
-"if"            { return IF; }
-"else"          { return ELSE; }
-"while"         { return WHILE; }
-"break"         { return BREAK; }
-"continue"      { return CONTINUE; }
-
 
 {Identifier}    { yylval.str_val = new string(yytext); return IDENT; }
 
