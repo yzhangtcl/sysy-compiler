@@ -2,6 +2,7 @@
   #include "ast.h"
   #include <memory>
   #include <string>
+  #include <vector>
 }
 
 %{
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 // 声明 lexer 函数和错误处理函数
 int yylex();
@@ -33,18 +35,21 @@ using namespace std;
   std::string *str_val;
   int int_val;
   BaseAST *ast_val;
+  std::vector<BaseAST *> *ast_list;
 }
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
-%token INT RETURN
+%token INT RETURN CONST
 %token <str_val> IDENT
 %token <int_val> INT_CONST
 %token LE GE EQ NE AND OR
 
 // 非终结符的类型定义
-%type <ast_val> FuncDef FuncType Block Stmt Exp PrimaryExp UnaryExp MulExp AddExp
-%type <ast_val> RelExp EqExp LAndExp LOrExp
+%type <ast_val> FuncDef FuncType Block BlockItem Decl ConstDecl VarDecl ConstDef VarDef
+%type <ast_val> Stmt Exp PrimaryExp UnaryExp MulExp AddExp RelExp EqExp LAndExp LOrExp
+%type <ast_val> InitVal LVal
+%type <ast_list> BlockItems ConstDefList VarDefList
 %type <int_val> Number
 
 %%
@@ -92,17 +97,129 @@ FuncType
   ;
 
 Block
-  : '{' Stmt '}' {
+  : '{' BlockItems '}' {
     auto ast = new BlockAST();
-    ast->stmt = std::unique_ptr<BaseAST>($2);
+    for (auto *item : *$2) {
+      ast->items.emplace_back(item);
+    }
+    delete $2;
     $$ = ast;
+  }
+  ;
+
+BlockItems
+  : {
+    $$ = new std::vector<BaseAST *>();
+  }
+  | BlockItems BlockItem {
+    $1->push_back($2);
+    $$ = $1;
+  }
+  ;
+
+BlockItem
+  : Decl {
+    $$ = $1;
+  }
+  | Stmt {
+    $$ = $1;
+  }
+  ;
+
+Decl
+  : ConstDecl {
+    $$ = $1;
+  }
+  | VarDecl {
+    $$ = $1;
+  }
+  ;
+
+ConstDecl
+  : CONST INT ConstDefList ';' {
+    auto ast = new ConstDeclAST();
+    for (auto *def : *$3) {
+      ast->defs.emplace_back(def);
+    }
+    delete $3;
+    $$ = ast;
+  }
+  ;
+
+ConstDefList
+  : ConstDef {
+    auto defs = new std::vector<BaseAST *>();
+    defs->push_back($1);
+    $$ = defs;
+  }
+  | ConstDefList ',' ConstDef {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+ConstDef
+  : IDENT '=' Exp {
+    auto ast = new ConstDefAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    ast->init = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+VarDecl
+  : INT VarDefList ';' {
+    auto ast = new VarDeclAST();
+    for (auto *def : *$2) {
+      ast->defs.emplace_back(def);
+    }
+    delete $2;
+    $$ = ast;
+  }
+  ;
+
+VarDefList
+  : VarDef {
+    auto defs = new std::vector<BaseAST *>();
+    defs->push_back($1);
+    $$ = defs;
+  }
+  | VarDefList ',' VarDef {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+VarDef
+  : IDENT {
+    auto ast = new VarDefAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    $$ = ast;
+  }
+  | IDENT '=' InitVal {
+    auto ast = new VarDefAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    ast->init = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+InitVal
+  : Exp {
+    $$ = $1;
   }
   ;
 
 Stmt
   : RETURN Exp ';' {
-    auto ast = new StmtAST();
+    auto ast = new ReturnStmtAST();
     ast->ret_exp = std::unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | LVal '=' Exp ';' {
+    auto ast = new AssignStmtAST();
+    ast->lval = std::unique_ptr<BaseAST>($1);
+    ast->value = std::unique_ptr<BaseAST>($3);
     $$ = ast;
   }
   ;
@@ -121,11 +238,24 @@ PrimaryExp
     ast->inner = std::unique_ptr<BaseAST>($2);
     $$ = ast;
   }
+  | LVal {
+    auto ast = new PrimaryExpAST();
+    ast->inner = std::unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
   | Number {
     auto number = new NumberAST();
     number->value = $1;
     auto ast = new PrimaryExpAST();
     ast->inner = std::unique_ptr<BaseAST>(number);
+    $$ = ast;
+  }
+  ;
+
+LVal
+  : IDENT {
+    auto ast = new LValAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
     $$ = ast;
   }
   ;

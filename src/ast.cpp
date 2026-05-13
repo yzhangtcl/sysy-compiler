@@ -2,14 +2,61 @@
 
 #include <cassert>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include <utility>
 
 namespace {
 int g_temp_id = 0;
+int g_alloc_id = 0;
+
+struct SymbolInfo {
+  enum class Kind { Const, Var };
+  Kind kind = Kind::Const;
+  int const_value = 0;
+  std::string alloc_name;
+};
+
+std::vector<std::unordered_map<std::string, SymbolInfo>> g_scopes;
 
 std::string NextTemp() {
   // 生成新的 SSA 临时值名
   return "%" + std::to_string(g_temp_id++);
+}
+
+std::string NextAllocName(const std::string &ident) {
+  // 生成唯一的 alloc 名称, 避免同名变量冲突
+  return "@" + ident + "_" + std::to_string(g_alloc_id++);
+}
+
+void EnterScope() {
+  // 进入新作用域
+  g_scopes.emplace_back();
+}
+
+void ExitScope() {
+  // 离开作用域
+  assert(!g_scopes.empty());
+  g_scopes.pop_back();
+}
+
+SymbolInfo *LookupSymbol(const std::string &name) {
+  // 从内到外查找符号
+  for (auto it = g_scopes.rbegin(); it != g_scopes.rend(); ++it) {
+    auto found = it->find(name);
+    if (found != it->end()) {
+      return &found->second;
+    }
+  }
+  return nullptr;
+}
+
+void InsertSymbol(const std::string &name, const SymbolInfo &info) {
+  // 当前作用域内禁止重名
+  assert(!g_scopes.empty());
+  auto &scope = g_scopes.back();
+  assert(scope.find(name) == scope.end());
+  scope.emplace(name, info);
 }
 
 std::string EmitBinary(std::ostream &out, const std::string &op, const std::string &lhs,
@@ -17,6 +64,13 @@ std::string EmitBinary(std::ostream &out, const std::string &op, const std::stri
   // 输出一条二元指令并返回结果值名
   std::string result = NextTemp();
   out << "  " << result << " = " << op << " " << lhs << ", " << rhs << "\n";
+  return result;
+}
+
+std::string EmitLoad(std::ostream &out, const std::string &addr) {
+  // 输出一条 load 指令
+  std::string result = NextTemp();
+  out << "  " << result << " = load " << addr << "\n";
   return result;
 }
 
@@ -39,18 +93,32 @@ void FuncTypeAST::DumpKoopa(std::ostream &out) const {
 }
 
 void BlockAST::DumpKoopa(std::ostream &out) const {
-  // 输出块内唯一的语句
-  // 输出块内语句
-  stmt->DumpKoopa(out);
+  // 输出块内所有语句或声明
+  EnterScope();
+  for (const auto &item : items) {
+    item->DumpKoopa(out);
+  }
+  ExitScope();
 }
 
-void StmtAST::DumpKoopa(std::ostream &out) const {
+void ReturnStmtAST::DumpKoopa(std::ostream &out) const {
   // 输出 return 指令及其返回值
   // 生成 return 指令
   auto *expr = dynamic_cast<ExprAST *>(ret_exp.get());
   assert(expr != nullptr);
   std::string value = expr->DumpKoopaValue(out);
   out << "  ret " << value << "\n";
+}
+
+void AssignStmtAST::DumpKoopa(std::ostream &out) const {
+  // 赋值语句: 计算右值并写回变量
+  auto *lhs = dynamic_cast<LValAST *>(lval.get());
+  auto *rhs = dynamic_cast<ExprAST *>(value.get());
+  assert(lhs != nullptr && rhs != nullptr);
+  SymbolInfo *info = LookupSymbol(lhs->ident);
+  assert(info != nullptr && info->kind == SymbolInfo::Kind::Var);
+  std::string rhs_value = rhs->DumpKoopaValue(out);
+  out << "  store " << rhs_value << ", " << info->alloc_name << "\n";
 }
 
 void FuncDefAST::DumpKoopa(std::ostream &out) const {
@@ -60,8 +128,12 @@ void FuncDefAST::DumpKoopa(std::ostream &out) const {
   out << "%entry:\n";
   // 每个函数从 0 开始编号临时变量
   g_temp_id = 0;
+  g_alloc_id = 0;
+  g_scopes.clear();
+  EnterScope();
   // 输出函数体
   block->DumpKoopa(out);
+  ExitScope();
   // 结束函数
   out << "}\n";
 }
@@ -72,11 +144,37 @@ std::string NumberAST::DumpKoopaValue(std::ostream &out) const {
   return std::to_string(value);
 }
 
+int NumberAST::EvalConst() const {
+  return value;
+}
+
 std::string PrimaryExpAST::DumpKoopaValue(std::ostream &out) const {
   // 直接转发到内部表达式
   auto *expr = dynamic_cast<ExprAST *>(inner.get());
   assert(expr != nullptr);
   return expr->DumpKoopaValue(out);
+}
+
+int PrimaryExpAST::EvalConst() const {
+  auto *expr = dynamic_cast<ExprAST *>(inner.get());
+  assert(expr != nullptr);
+  return expr->EvalConst();
+}
+
+std::string LValAST::DumpKoopaValue(std::ostream &out) const {
+  // 读取变量或常量
+  SymbolInfo *info = LookupSymbol(ident);
+  assert(info != nullptr);
+  if (info->kind == SymbolInfo::Kind::Const) {
+    return std::to_string(info->const_value);
+  }
+  return EmitLoad(out, info->alloc_name);
+}
+
+int LValAST::EvalConst() const {
+  SymbolInfo *info = LookupSymbol(ident);
+  assert(info != nullptr && info->kind == SymbolInfo::Kind::Const);
+  return info->const_value;
 }
 
 std::string UnaryExpAST::DumpKoopaValue(std::ostream &out) const {
@@ -92,6 +190,23 @@ std::string UnaryExpAST::DumpKoopaValue(std::ostream &out) const {
   }
   if (op == '!') {
     return EmitBinary(out, "eq", value, "0");
+  }
+  assert(false);
+  return value;
+}
+
+int UnaryExpAST::EvalConst() const {
+  auto *expr = dynamic_cast<ExprAST *>(operand.get());
+  assert(expr != nullptr);
+  int value = expr->EvalConst();
+  if (op == '+') {
+    return value;
+  }
+  if (op == '-') {
+    return -value;
+  }
+  if (op == '!') {
+    return value == 0 ? 1 : 0;
   }
   assert(false);
   return value;
@@ -145,4 +260,82 @@ std::string BinaryExpAST::DumpKoopaValue(std::ostream &out) const {
   }
   assert(false);
   return lhs_value;
+}
+
+int BinaryExpAST::EvalConst() const {
+  auto *left = dynamic_cast<ExprAST *>(lhs.get());
+  auto *right = dynamic_cast<ExprAST *>(rhs.get());
+  assert(left != nullptr && right != nullptr);
+  int lhs_value = left->EvalConst();
+  int rhs_value = right->EvalConst();
+  switch (op) {
+    case BinaryOp::Add:
+      return lhs_value + rhs_value;
+    case BinaryOp::Sub:
+      return lhs_value - rhs_value;
+    case BinaryOp::Mul:
+      return lhs_value * rhs_value;
+    case BinaryOp::Div:
+      return lhs_value / rhs_value;
+    case BinaryOp::Mod:
+      return lhs_value % rhs_value;
+    case BinaryOp::Lt:
+      return lhs_value < rhs_value ? 1 : 0;
+    case BinaryOp::Gt:
+      return lhs_value > rhs_value ? 1 : 0;
+    case BinaryOp::Le:
+      return lhs_value <= rhs_value ? 1 : 0;
+    case BinaryOp::Ge:
+      return lhs_value >= rhs_value ? 1 : 0;
+    case BinaryOp::Eq:
+      return lhs_value == rhs_value ? 1 : 0;
+    case BinaryOp::Ne:
+      return lhs_value != rhs_value ? 1 : 0;
+    case BinaryOp::And:
+      return (lhs_value != 0 && rhs_value != 0) ? 1 : 0;
+    case BinaryOp::Or:
+      return (lhs_value != 0 || rhs_value != 0) ? 1 : 0;
+  }
+  assert(false);
+  return lhs_value;
+}
+
+void ConstDefAST::DumpKoopa(std::ostream &out) const {
+  // 常量定义只需要在编译期求值
+  (void)out;
+  auto *expr = dynamic_cast<ExprAST *>(init.get());
+  assert(expr != nullptr);
+  SymbolInfo info;
+  info.kind = SymbolInfo::Kind::Const;
+  info.const_value = expr->EvalConst();
+  InsertSymbol(ident, info);
+}
+
+void ConstDeclAST::DumpKoopa(std::ostream &out) const {
+  // 遍历常量定义
+  for (const auto &def : defs) {
+    def->DumpKoopa(out);
+  }
+}
+
+void VarDefAST::DumpKoopa(std::ostream &out) const {
+  // 变量定义: 生成 alloc, 可选初始化
+  SymbolInfo info;
+  info.kind = SymbolInfo::Kind::Var;
+  info.alloc_name = NextAllocName(ident);
+  out << "  " << info.alloc_name << " = alloc i32\n";
+  InsertSymbol(ident, info);
+  if (init) {
+    auto *expr = dynamic_cast<ExprAST *>(init.get());
+    assert(expr != nullptr);
+    std::string init_value = expr->DumpKoopaValue(out);
+    out << "  store " << init_value << ", " << info.alloc_name << "\n";
+  }
+}
+
+void VarDeclAST::DumpKoopa(std::ostream &out) const {
+  // 遍历变量定义
+  for (const auto &def : defs) {
+    def->DumpKoopa(out);
+  }
 }

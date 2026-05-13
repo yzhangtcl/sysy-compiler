@@ -36,7 +36,7 @@ void AsmGenerator::VisitFunction(const koopa_raw_function_t &func, std::ostream 
   PrepareFunction(func);
   EmitFunctionLabel(func, out);
   if (stack_size_ > 0) {
-    out << "  addi sp, sp, -" << stack_size_ << "\n";
+    EmitAddiSp(-stack_size_, out);
   }
   VisitSlice(func->bbs, out);
 }
@@ -54,6 +54,15 @@ void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out)
   switch (kind.tag) {
     case KOOPA_RVT_RETURN:
       VisitReturn(kind.data.ret, out);
+      break;
+    case KOOPA_RVT_ALLOC:
+      VisitAlloc(value);
+      break;
+    case KOOPA_RVT_LOAD:
+      VisitLoad(kind.data.load, value, out);
+      break;
+    case KOOPA_RVT_STORE:
+      VisitStore(kind.data.store, out);
       break;
     case KOOPA_RVT_BINARY:
       VisitBinary(kind.data.binary, value, out);
@@ -78,10 +87,42 @@ void AsmGenerator::VisitReturn(const koopa_raw_return_t &ret, std::ostream &out)
     }
   }
   if (stack_size_ > 0) {
-    out << "  addi sp, sp, " << stack_size_ << "\n";
+    EmitAddiSp(stack_size_, out);
   }
   // 函数返回
   out << "  ret\n";
+}
+
+void AsmGenerator::VisitAlloc(const koopa_raw_value_t &value) {
+  // alloc 只负责分配栈槽, 不生成指令
+  (void)value;
+}
+
+void AsmGenerator::VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value_t &value,
+                             std::ostream &out) {
+  // 读取地址指向的值, 并将结果写回栈
+  if (load.src->kind.tag == KOOPA_RVT_ALLOC) {
+    auto it = value_offsets_.find(load.src);
+    assert(it != value_offsets_.end());
+    EmitLoadFromOffset("t0", it->second, out);
+  } else {
+    LoadAddress(load.src, "t1", out);
+    out << "  lw t0, 0(t1)\n";
+  }
+  StoreValue(value, "t0", out);
+}
+
+void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out) {
+  // 计算待写入的值
+  LoadValue(store.value, "t0", out);
+  if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+    auto it = value_offsets_.find(store.dest);
+    assert(it != value_offsets_.end());
+    EmitStoreToOffset("t0", it->second, out);
+  } else {
+    LoadAddress(store.dest, "t1", out);
+    out << "  sw t0, 0(t1)\n";
+  }
 }
 
 void AsmGenerator::VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw_value_t &value,
@@ -173,7 +214,7 @@ void AsmGenerator::PrepareFunction(const koopa_raw_function_t &func) {
     auto insts = bb->insts;
     for (size_t j = 0; j < insts.len; ++j) {
       auto value = reinterpret_cast<koopa_raw_value_t>(insts.buffer[j]);
-      if (value->kind.tag == KOOPA_RVT_BINARY) {
+      if (!IsUnitType(value->ty)) {
         value_offsets_[value] = stack_size_;
         stack_size_ += 4;
       }
@@ -194,7 +235,21 @@ void AsmGenerator::LoadValue(const koopa_raw_value_t &value, const std::string &
   }
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
-  out << "  lw " << reg << ", " << it->second << "(sp)\n";
+  EmitLoadFromOffset(reg, it->second, out);
+}
+
+void AsmGenerator::LoadAddress(const koopa_raw_value_t &value, const std::string &reg,
+                               std::ostream &out) {
+  // 将地址类型的值加载到寄存器
+  auto it = value_offsets_.find(value);
+  assert(it != value_offsets_.end());
+  int offset = it->second;
+  if (offset >= -2048 && offset <= 2047) {
+    out << "  addi " << reg << ", sp, " << offset << "\n";
+  } else {
+    out << "  li " << reg << ", " << offset << "\n";
+    out << "  add " << reg << ", sp, " << reg << "\n";
+  }
 }
 
 void AsmGenerator::StoreValue(const koopa_raw_value_t &value, const std::string &reg,
@@ -202,5 +257,43 @@ void AsmGenerator::StoreValue(const koopa_raw_value_t &value, const std::string 
   // 将寄存器中的结果写回值对应的栈槽
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
-  out << "  sw " << reg << ", " << it->second << "(sp)\n";
+  EmitStoreToOffset(reg, it->second, out);
+}
+
+bool AsmGenerator::IsUnitType(const koopa_raw_type_t &type) const {
+  return type->tag == KOOPA_RTT_UNIT;
+}
+
+void AsmGenerator::EmitAddiSp(int offset, std::ostream &out) {
+  // 调整 sp, 处理 12 位立即数范围
+  if (offset >= -2048 && offset <= 2047) {
+    out << "  addi sp, sp, " << offset << "\n";
+  } else {
+    out << "  li t0, " << offset << "\n";
+    out << "  add sp, sp, t0\n";
+  }
+}
+
+void AsmGenerator::EmitLoadFromOffset(const std::string &reg, int offset,
+                                      std::ostream &out) {
+  // 从 sp + offset 加载数据, 处理 12 位偏移限制
+  if (offset >= -2048 && offset <= 2047) {
+    out << "  lw " << reg << ", " << offset << "(sp)\n";
+  } else {
+    out << "  li t2, " << offset << "\n";
+    out << "  add t2, sp, t2\n";
+    out << "  lw " << reg << ", 0(t2)\n";
+  }
+}
+
+void AsmGenerator::EmitStoreToOffset(const std::string &reg, int offset,
+                                     std::ostream &out) {
+  // 向 sp + offset 写入数据, 处理 12 位偏移限制
+  if (offset >= -2048 && offset <= 2047) {
+    out << "  sw " << reg << ", " << offset << "(sp)\n";
+  } else {
+    out << "  li t2, " << offset << "\n";
+    out << "  add t2, sp, t2\n";
+    out << "  sw " << reg << ", 0(t2)\n";
+  }
 }

@@ -25,6 +25,13 @@ class AsmGenerator {
   // 处理二元指令
   void VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw_value_t &value,
                    std::ostream &out);
+  // 处理 alloc 指令
+  void VisitAlloc(const koopa_raw_value_t &value);
+  // 处理 load 指令
+  void VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value_t &value,
+                 std::ostream &out);
+  // 处理 store 指令
+  void VisitStore(const koopa_raw_store_t &store, std::ostream &out);
   // 读取整数常量
   int32_t VisitInteger(const koopa_raw_integer_t &integer);
   // 输出函数的汇编标签
@@ -34,9 +41,19 @@ class AsmGenerator {
   // 读取某个值到寄存器
   void LoadValue(const koopa_raw_value_t &value, const std::string &reg,
                  std::ostream &out);
+  // 读取地址到寄存器
+  void LoadAddress(const koopa_raw_value_t &value, const std::string &reg,
+                   std::ostream &out);
   // 将寄存器写回到值对应的栈位置
   void StoreValue(const koopa_raw_value_t &value, const std::string &reg,
                   std::ostream &out);
+  // 判断类型是否为 unit
+  bool IsUnitType(const koopa_raw_type_t &type) const;
+  // 生成 sp 调整指令
+  void EmitAddiSp(int offset, std::ostream &out);
+  // 访问栈内偏移的内存
+  void EmitLoadFromOffset(const std::string &reg, int offset, std::ostream &out);
+  void EmitStoreToOffset(const std::string &reg, int offset, std::ostream &out);
 
   std::unordered_map<koopa_raw_value_t, int> value_offsets_;
   int stack_size_ = 0;
