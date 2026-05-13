@@ -40,9 +40,11 @@ using namespace std;
 %token INT RETURN
 %token <str_val> IDENT
 %token <int_val> INT_CONST
+%token LE GE EQ NE AND OR
 
 // 非终结符的类型定义
-%type <ast_val> FuncDef FuncType Block Stmt
+%type <ast_val> FuncDef FuncType Block Stmt Exp PrimaryExp UnaryExp MulExp AddExp
+%type <ast_val> RelExp EqExp LAndExp LOrExp
 %type <int_val> Number
 
 %%
@@ -98,14 +100,196 @@ Block
   ;
 
 Stmt
-  : RETURN Number ';' {
+  : RETURN Exp ';' {
     auto ast = new StmtAST();
-    ast->ret_value = $2;
+    ast->ret_exp = std::unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  ;
+
+Exp
+  // 表达式顶层入口: 逻辑或表达式
+  : LOrExp {
+    $$ = $1;
+  }
+  ;
+
+PrimaryExp
+  // 基本表达式: 括号表达式或数字
+  : '(' Exp ')' {
+    auto ast = new PrimaryExpAST();
+    ast->inner = std::unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | Number {
+    auto number = new NumberAST();
+    number->value = $1;
+    auto ast = new PrimaryExpAST();
+    ast->inner = std::unique_ptr<BaseAST>(number);
+    $$ = ast;
+  }
+  ;
+
+UnaryExp
+  // 一元表达式: 基本表达式或前缀一元运算
+  : PrimaryExp {
+    $$ = $1;
+  }
+  | '+' UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->op = '+';
+    ast->operand = std::unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | '-' UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->op = '-';
+    ast->operand = std::unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | '!' UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->op = '!';
+    ast->operand = std::unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  ;
+
+MulExp
+  // 乘除模: 左结合, 优先级高于加减
+  : UnaryExp {
+    $$ = $1;
+  }
+  | MulExp '*' UnaryExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Mul;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | MulExp '/' UnaryExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Div;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | MulExp '%' UnaryExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Mod;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+AddExp
+  // 加减: 左结合
+  : MulExp {
+    $$ = $1;
+  }
+  | AddExp '+' MulExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Add;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | AddExp '-' MulExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Sub;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+RelExp
+  // 关系运算: < > <= >=
+  : AddExp {
+    $$ = $1;
+  }
+  | RelExp '<' AddExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Lt;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | RelExp '>' AddExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Gt;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | RelExp LE AddExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Le;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | RelExp GE AddExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Ge;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+EqExp
+  // 相等性运算: == !=
+  : RelExp {
+    $$ = $1;
+  }
+  | EqExp EQ RelExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Eq;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | EqExp NE RelExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Ne;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+LAndExp
+  // 逻辑与: 不做短路求值, 仅构建 AST
+  : EqExp {
+    $$ = $1;
+  }
+  | LAndExp AND EqExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::And;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+LOrExp
+  // 逻辑或: 不做短路求值, 仅构建 AST
+  : LAndExp {
+    $$ = $1;
+  }
+  | LOrExp OR LAndExp {
+    auto ast = new BinaryExpAST();
+    ast->op = BinaryOp::Or;
+    ast->lhs = std::unique_ptr<BaseAST>($1);
+    ast->rhs = std::unique_ptr<BaseAST>($3);
     $$ = ast;
   }
   ;
 
 Number
+  // 整数字面量
   : INT_CONST {
     $$ = $1;
   }

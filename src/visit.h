@@ -1,6 +1,8 @@
 #pragma once
 
 #include <iosfwd>
+#include <string>
+#include <unordered_map>
 
 #include "koopa.h"
 
@@ -20,8 +22,22 @@ class AsmGenerator {
   void VisitValue(const koopa_raw_value_t &value, std::ostream &out);
   // 处理 return 指令
   void VisitReturn(const koopa_raw_return_t &ret, std::ostream &out);
+  // 处理二元指令
+  void VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw_value_t &value,
+                   std::ostream &out);
   // 读取整数常量
   int32_t VisitInteger(const koopa_raw_integer_t &integer);
   // 输出函数的汇编标签
   void EmitFunctionLabel(const koopa_raw_function_t &func, std::ostream &out);
+  // 预处理函数, 计算栈空间并分配值的栈偏移
+  void PrepareFunction(const koopa_raw_function_t &func);
+  // 读取某个值到寄存器
+  void LoadValue(const koopa_raw_value_t &value, const std::string &reg,
+                 std::ostream &out);
+  // 将寄存器写回到值对应的栈位置
+  void StoreValue(const koopa_raw_value_t &value, const std::string &reg,
+                  std::ostream &out);
+
+  std::unordered_map<koopa_raw_value_t, int> value_offsets_;
+  int stack_size_ = 0;
 };

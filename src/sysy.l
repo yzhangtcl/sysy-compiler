@@ -34,6 +34,12 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 {BlockComment}   { /* 忽略, 不做任何操作 */ }
 "int"           { return INT; }
 "return"        { return RETURN; }
+"<="            { return LE; }
+">="            { return GE; }
+"=="            { return EQ; }
+"!="            { return NE; }
+"&&"            { return AND; }
+"||"            { return OR; }
 
 {Identifier}    { yylval.str_val = new string(yytext); return IDENT; }
 
