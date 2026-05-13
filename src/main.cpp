@@ -3,9 +3,12 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include "ast.h"
+#include "koopa.h"
+#include "visit.h"
 
 using namespace std;
 
@@ -38,6 +41,26 @@ int main(int argc, const char *argv[]) {
   assert(out.is_open());
   if (string(mode) == "-koopa") {
     ast->DumpKoopa(out);
+    return 0;
+  }
+
+  if (string(mode) == "-riscv") {
+    std::ostringstream koopa_stream;
+    ast->DumpKoopa(koopa_stream);
+    const std::string &ir = koopa_stream.str();
+
+    koopa_program_t program;
+    koopa_error_code_t parse_ret = koopa_parse_from_string(ir.c_str(), &program);
+    assert(parse_ret == KOOPA_EC_SUCCESS);
+    koopa_raw_program_builder_t builder = koopa_new_raw_program_builder();
+    koopa_raw_program_t raw = koopa_build_raw_program(builder, program);
+    koopa_delete_program(program);
+
+    AsmGenerator generator;
+    generator.Generate(raw, out);
+
+    koopa_delete_raw_program_builder(builder);
+    return 0;
   }
   return 0;
 }

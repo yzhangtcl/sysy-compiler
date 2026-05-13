@@ -14,36 +14,28 @@ class CompUnitAST : public BaseAST {
  public:
   std::unique_ptr<BaseAST> func_def;
 
-  void DumpKoopa(std::ostream &out) const override {
-    func_def->DumpKoopa(out);
-  }
+  void DumpKoopa(std::ostream &out) const override;
 };
 
 class FuncTypeAST : public BaseAST {
  public:
   std::string name;
 
-  void DumpKoopa(std::ostream &out) const override {
-    (void)out;
-  }
+  void DumpKoopa(std::ostream &out) const override;
 };
 
 class BlockAST : public BaseAST {
  public:
   std::unique_ptr<BaseAST> stmt;
 
-  void DumpKoopa(std::ostream &out) const override {
-    stmt->DumpKoopa(out);
-  }
+  void DumpKoopa(std::ostream &out) const override;
 };
 
 class StmtAST : public BaseAST {
  public:
   int ret_value = 0;
 
-  void DumpKoopa(std::ostream &out) const override {
-    out << "  ret " << ret_value << "\n";
-  }
+  void DumpKoopa(std::ostream &out) const override;
 };
 
 class FuncDefAST : public BaseAST {
@@ -52,10 +44,5 @@ class FuncDefAST : public BaseAST {
   std::string ident;
   std::unique_ptr<BaseAST> block;
 
-  void DumpKoopa(std::ostream &out) const override {
-    out << "fun @" << ident << "(): i32 {\n";
-    out << "%entry:\n";
-    block->DumpKoopa(out);
-    out << "}\n";
-  }
+  void DumpKoopa(std::ostream &out) const override;
 };
