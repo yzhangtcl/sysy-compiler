@@ -1,7 +1,5 @@
   .text
   .globl main
 main:
-  li    a0, 0
+  li a0, 123
   ret
-
-

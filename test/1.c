@@ -1,7 +1,3 @@
-int main() {
-  // 忽略我的存在
-  /*
-  edwdw
-  */
-  return 0;
+int main() {  
+  return (12.3*10)+5;
 }
