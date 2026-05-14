@@ -45,7 +45,7 @@
 - IR 生成: 变量使用 alloc/load/store 落栈, 常量在编译期求值后直接替换。
 - 汇编生成: 处理 alloc/load/store, 统一为所有有返回值的指令分配栈槽。
 
-## float-support
+## lv4_w_float float-support
 
 为支持浮点变量与表达式, 本阶段做了如下改动:
 
@@ -53,3 +53,18 @@
 - AST 扩展: 引入浮点字面量与类型标记, 常量表达式支持浮点求值与类型转换。
 - IR 生成: 浮点值以 32-bit bit pattern 形式承载, 运算保留类型信息。
 - 汇编生成: 使用 RISC-V F 扩展指令完成浮点运算/比较/类型转换。
+
+同时增加了自定义测试：
+
+添加环境：
+
+```bash
+apt update
+apt install -y gcc-riscv64-linux-gnu qemu-user
+```
+
+运行程序在 ./test 中，文件名为 test1.c，则测试命令为：
+
+```bash
+./test.sh test1
+```
