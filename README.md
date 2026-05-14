@@ -54,7 +54,7 @@
 - IR 生成: 浮点值以 32-bit bit pattern 形式承载, 运算保留类型信息。
 - 汇编生成: 使用 RISC-V F 扩展指令完成浮点运算/比较/类型转换。
 
-同时增加了自定义测试：
+同时增加了自定义测试 `./test.sh`
 
 添加环境：
 
@@ -68,3 +68,5 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
 ```bash
 ./test.sh test1
 ```
+
+注意，当前测试方法只支持通过 return 的值来判断结果是否正确，具体请参考 `./test/test1` (内藏小彩蛋)
