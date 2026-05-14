@@ -34,6 +34,12 @@ void AsmGenerator::VisitFunction(const koopa_raw_function_t &func, std::ostream 
   // 预处理函数并生成函数级汇编骨架
   // 先输出函数标签再遍历基本块
   PrepareFunction(func);
+  const char *raw_name = func->name ? func->name : "@main";
+  std::string func_name = raw_name;
+  if (!func_name.empty() && func_name[0] == '@') {
+    func_name.erase(0, 1);
+  }
+  current_return_type_ = LookupFunctionReturnType(func_name);
   EmitFunctionLabel(func, out);
   if (stack_size_ > 0) {
     EmitAddiSp(-stack_size_, out);
@@ -77,13 +83,26 @@ void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out)
 
 void AsmGenerator::VisitReturn(const koopa_raw_return_t &ret, std::ostream &out) {
   // 处理 return: 计算返回值并恢复栈帧
-  // 当前只有整数返回
+  // 返回值按函数返回类型处理
   if (ret.value != nullptr) {
-    if (ret.value->kind.tag == KOOPA_RVT_INTEGER) {
-      int32_t imm = VisitInteger(ret.value->kind.data.integer);
-      out << "  li a0, " << imm << "\n";
+    ValueType value_type = GetValueType(ret.value);
+    if (current_return_type_ == ValueType::Int) {
+      if (value_type == ValueType::Float) {
+        LoadFloatValue(ret.value, "ft0", out);
+        out << "  fcvt.w.s a0, ft0, rtz\n";
+      } else if (ret.value->kind.tag == KOOPA_RVT_INTEGER) {
+        int32_t imm = VisitInteger(ret.value->kind.data.integer);
+        out << "  li a0, " << imm << "\n";
+      } else {
+        LoadValue(ret.value, "a0", out);
+      }
     } else {
-      LoadValue(ret.value, "a0", out);
+      if (value_type == ValueType::Float) {
+        LoadFloatValue(ret.value, "fa0", out);
+      } else {
+        LoadValue(ret.value, "t0", out);
+        out << "  fcvt.s.w fa0, t0\n";
+      }
     }
   }
   if (stack_size_ > 0) {
@@ -101,6 +120,20 @@ void AsmGenerator::VisitAlloc(const koopa_raw_value_t &value) {
 void AsmGenerator::VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value_t &value,
                              std::ostream &out) {
   // 读取地址指向的值, 并将结果写回栈
+  ValueType value_type = GetValueType(value);
+  if (value_type == ValueType::Float) {
+    if (load.src->kind.tag == KOOPA_RVT_ALLOC) {
+      auto it = value_offsets_.find(load.src);
+      assert(it != value_offsets_.end());
+      EmitLoadFromOffsetFloat("ft0", it->second, out);
+    } else {
+      LoadAddress(load.src, "t1", out);
+      out << "  flw ft0, 0(t1)\n";
+    }
+    StoreFloatValue(value, "ft0", out);
+    return;
+  }
+
   if (load.src->kind.tag == KOOPA_RVT_ALLOC) {
     auto it = value_offsets_.find(load.src);
     assert(it != value_offsets_.end());
@@ -114,7 +147,36 @@ void AsmGenerator::VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value
 
 void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out) {
   // 计算待写入的值
-  LoadValue(store.value, "t0", out);
+  ValueType dest_type = GetValueType(store.dest);
+  ValueType value_type = GetValueType(store.value);
+  if (dest_type == ValueType::Float) {
+    if (value_type == ValueType::Float) {
+      LoadFloatValue(store.value, "ft0", out);
+    } else if (store.value->kind.tag == KOOPA_RVT_INTEGER) {
+      int32_t imm = VisitInteger(store.value->kind.data.integer);
+      out << "  li t0, " << imm << "\n";
+      out << "  fcvt.s.w ft0, t0\n";
+    } else {
+      LoadValue(store.value, "t0", out);
+      out << "  fcvt.s.w ft0, t0\n";
+    }
+    if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+      auto it = value_offsets_.find(store.dest);
+      assert(it != value_offsets_.end());
+      EmitStoreToOffsetFloat("ft0", it->second, out);
+    } else {
+      LoadAddress(store.dest, "t1", out);
+      out << "  fsw ft0, 0(t1)\n";
+    }
+    return;
+  }
+
+  if (value_type == ValueType::Float) {
+    LoadFloatValue(store.value, "ft0", out);
+    out << "  fcvt.w.s t0, ft0, rtz\n";
+  } else {
+    LoadValue(store.value, "t0", out);
+  }
   if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
     auto it = value_offsets_.find(store.dest);
     assert(it != value_offsets_.end());
@@ -128,6 +190,107 @@ void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out)
 void AsmGenerator::VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw_value_t &value,
                                std::ostream &out) {
   // 处理二元运算: 加载两侧操作数, 计算并写回栈
+  ValueType lhs_type = GetValueType(binary.lhs);
+  ValueType rhs_type = GetValueType(binary.rhs);
+  ValueType result_type = GetValueType(value);
+  bool use_float = lhs_type == ValueType::Float || rhs_type == ValueType::Float ||
+                   result_type == ValueType::Float;
+
+  if (use_float) {
+    if (result_type == ValueType::Float && binary.op == KOOPA_RBO_ADD &&
+        binary.lhs->kind.tag == KOOPA_RVT_INTEGER &&
+        binary.rhs->kind.tag == KOOPA_RVT_INTEGER &&
+        VisitInteger(binary.lhs->kind.data.integer) == 0) {
+      int32_t bits = VisitInteger(binary.rhs->kind.data.integer);
+      out << "  li t0, " << bits << "\n";
+      out << "  fmv.w.x ft0, t0\n";
+      StoreFloatValue(value, "ft0", out);
+      return;
+    }
+
+    auto load_float_operand = [&](const koopa_raw_value_t &operand, ValueType type,
+                                  const std::string &freg) {
+      if (type == ValueType::Float) {
+        if (operand->kind.tag == KOOPA_RVT_INTEGER) {
+          int32_t bits = VisitInteger(operand->kind.data.integer);
+          out << "  li t0, " << bits << "\n";
+          out << "  fmv.w.x " << freg << ", t0\n";
+          return;
+        }
+        auto it = value_offsets_.find(operand);
+        assert(it != value_offsets_.end());
+        EmitLoadFromOffsetFloat(freg, it->second, out);
+        return;
+      }
+      LoadValue(operand, "t0", out);
+      out << "  fcvt.s.w " << freg << ", t0\n";
+    };
+
+    switch (binary.op) {
+      case KOOPA_RBO_ADD:
+      case KOOPA_RBO_SUB:
+      case KOOPA_RBO_MUL:
+      case KOOPA_RBO_DIV: {
+        load_float_operand(binary.lhs, lhs_type, "ft0");
+        load_float_operand(binary.rhs, rhs_type, "ft1");
+        switch (binary.op) {
+          case KOOPA_RBO_ADD:
+            out << "  fadd.s ft0, ft0, ft1\n";
+            break;
+          case KOOPA_RBO_SUB:
+            out << "  fsub.s ft0, ft0, ft1\n";
+            break;
+          case KOOPA_RBO_MUL:
+            out << "  fmul.s ft0, ft0, ft1\n";
+            break;
+          case KOOPA_RBO_DIV:
+            out << "  fdiv.s ft0, ft0, ft1\n";
+            break;
+          default:
+            break;
+        }
+        StoreFloatValue(value, "ft0", out);
+        return;
+      }
+      case KOOPA_RBO_EQ:
+      case KOOPA_RBO_NOT_EQ:
+      case KOOPA_RBO_LT:
+      case KOOPA_RBO_GT:
+      case KOOPA_RBO_LE:
+      case KOOPA_RBO_GE: {
+        load_float_operand(binary.lhs, lhs_type, "ft0");
+        load_float_operand(binary.rhs, rhs_type, "ft1");
+        switch (binary.op) {
+          case KOOPA_RBO_EQ:
+            out << "  feq.s t0, ft0, ft1\n";
+            break;
+          case KOOPA_RBO_NOT_EQ:
+            out << "  feq.s t0, ft0, ft1\n";
+            out << "  seqz t0, t0\n";
+            break;
+          case KOOPA_RBO_LT:
+            out << "  flt.s t0, ft0, ft1\n";
+            break;
+          case KOOPA_RBO_GT:
+            out << "  flt.s t0, ft1, ft0\n";
+            break;
+          case KOOPA_RBO_LE:
+            out << "  fle.s t0, ft0, ft1\n";
+            break;
+          case KOOPA_RBO_GE:
+            out << "  fle.s t0, ft1, ft0\n";
+            break;
+          default:
+            break;
+        }
+        StoreValue(value, "t0", out);
+        return;
+      }
+      default:
+        assert(false);
+    }
+  }
+
   LoadValue(binary.lhs, "t0", out);
   LoadValue(binary.rhs, "t1", out);
 
@@ -225,6 +388,20 @@ void AsmGenerator::PrepareFunction(const koopa_raw_function_t &func) {
   }
 }
 
+ValueType AsmGenerator::GetValueType(const koopa_raw_value_t &value) const {
+  if (value->name != nullptr) {
+    ValueType type = LookupValueType(value->name);
+    if (type == ValueType::Float) {
+      return type;
+    }
+    if (value->name[0] == '%' && value->name[1] == 'f') {
+      return ValueType::Float;
+    }
+    return type;
+  }
+  return ValueType::Int;
+}
+
 void AsmGenerator::LoadValue(const koopa_raw_value_t &value, const std::string &reg,
                              std::ostream &out) {
   // 将值加载到目标寄存器, 立即数直接用 li
@@ -236,6 +413,26 @@ void AsmGenerator::LoadValue(const koopa_raw_value_t &value, const std::string &
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
   EmitLoadFromOffset(reg, it->second, out);
+}
+
+void AsmGenerator::LoadFloatValue(const koopa_raw_value_t &value, const std::string &reg,
+                                  std::ostream &out) {
+  // 将值加载到浮点寄存器, 整数先转为浮点
+  if (value->kind.tag == KOOPA_RVT_INTEGER) {
+    int32_t imm = VisitInteger(value->kind.data.integer);
+    out << "  li t0, " << imm << "\n";
+    out << "  fcvt.s.w " << reg << ", t0\n";
+    return;
+  }
+  ValueType type = GetValueType(value);
+  if (type == ValueType::Float) {
+    auto it = value_offsets_.find(value);
+    assert(it != value_offsets_.end());
+    EmitLoadFromOffsetFloat(reg, it->second, out);
+    return;
+  }
+  LoadValue(value, "t0", out);
+  out << "  fcvt.s.w " << reg << ", t0\n";
 }
 
 void AsmGenerator::LoadAddress(const koopa_raw_value_t &value, const std::string &reg,
@@ -258,6 +455,14 @@ void AsmGenerator::StoreValue(const koopa_raw_value_t &value, const std::string 
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
   EmitStoreToOffset(reg, it->second, out);
+}
+
+void AsmGenerator::StoreFloatValue(const koopa_raw_value_t &value, const std::string &reg,
+                                   std::ostream &out) {
+  // 将浮点寄存器写回值对应的栈槽
+  auto it = value_offsets_.find(value);
+  assert(it != value_offsets_.end());
+  EmitStoreToOffsetFloat(reg, it->second, out);
 }
 
 bool AsmGenerator::IsUnitType(const koopa_raw_type_t &type) const {
@@ -295,5 +500,29 @@ void AsmGenerator::EmitStoreToOffset(const std::string &reg, int offset,
     out << "  li t2, " << offset << "\n";
     out << "  add t2, sp, t2\n";
     out << "  sw " << reg << ", 0(t2)\n";
+  }
+}
+
+void AsmGenerator::EmitLoadFromOffsetFloat(const std::string &reg, int offset,
+                                           std::ostream &out) {
+  // 从 sp + offset 加载浮点数据
+  if (offset >= -2048 && offset <= 2047) {
+    out << "  flw " << reg << ", " << offset << "(sp)\n";
+  } else {
+    out << "  li t2, " << offset << "\n";
+    out << "  add t2, sp, t2\n";
+    out << "  flw " << reg << ", 0(t2)\n";
+  }
+}
+
+void AsmGenerator::EmitStoreToOffsetFloat(const std::string &reg, int offset,
+                                          std::ostream &out) {
+  // 向 sp + offset 写入浮点数据
+  if (offset >= -2048 && offset <= 2047) {
+    out << "  fsw " << reg << ", " << offset << "(sp)\n";
+  } else {
+    out << "  li t2, " << offset << "\n";
+    out << "  add t2, sp, t2\n";
+    out << "  fsw " << reg << ", 0(t2)\n";
   }
 }

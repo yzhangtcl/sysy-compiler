@@ -1,9 +1,33 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
+
+// 值类型: 当前支持 int 与 float.
+enum class ValueType { Int, Float };
+
+// 表达式生成的值与类型.
+struct ValueResult {
+  std::string name;
+  ValueType type = ValueType::Int;
+};
+
+// 常量表达式求值结果.
+struct ConstValue {
+  ValueType type = ValueType::Int;
+  int32_t int_value = 0;
+  float float_value = 0.0f;
+};
+
+// 类型信息表 (供后端查询).
+ValueType LookupValueType(const std::string &name);
+ValueType LookupFunctionReturnType(const std::string &name);
+void RegisterValueType(const std::string &name, ValueType type);
+void RegisterFunctionReturnType(const std::string &name, ValueType type);
+void ResetValueTypeTable();
 
 // AST 基类: 所有语法树节点都能输出 Koopa IR 文本.
 class BaseAST {
@@ -17,9 +41,9 @@ class BaseAST {
 class ExprAST : public BaseAST {
  public:
   // 生成表达式值, 返回 Koopa IR 的值名或立即数
-  virtual std::string DumpKoopaValue(std::ostream &out) const = 0;
+  virtual ValueResult DumpKoopaValue(std::ostream &out) const = 0;
   // 计算常量表达式的值
-  virtual int EvalConst() const = 0;
+  virtual ConstValue EvalConst() const = 0;
   void DumpKoopa(std::ostream &out) const override { (void)DumpKoopaValue(out); }
 };
 
@@ -37,6 +61,7 @@ class FuncTypeAST : public BaseAST {
  public:
   // 函数返回类型名, 当前仅支持 "int"
   std::string name;
+  ValueType value_type = ValueType::Int;
 
   void DumpKoopa(std::ostream &out) const override;
 };
@@ -85,8 +110,17 @@ class NumberAST : public ExprAST {
  public:
   int value = 0;
 
-  std::string DumpKoopaValue(std::ostream &out) const override;
-  int EvalConst() const override;
+  ValueResult DumpKoopaValue(std::ostream &out) const override;
+  ConstValue EvalConst() const override;
+};
+
+// 浮点字面量表达式.
+class FloatNumberAST : public ExprAST {
+ public:
+  float value = 0.0f;
+
+  ValueResult DumpKoopaValue(std::ostream &out) const override;
+  ConstValue EvalConst() const override;
 };
 
 // 基本表达式: 括号表达式或数字.
@@ -95,8 +129,8 @@ class PrimaryExpAST : public ExprAST {
   // (Exp) 或 Number
   std::unique_ptr<BaseAST> inner;
 
-  std::string DumpKoopaValue(std::ostream &out) const override;
-  int EvalConst() const override;
+  ValueResult DumpKoopaValue(std::ostream &out) const override;
+  ConstValue EvalConst() const override;
 };
 
 // 左值表达式: 标识符
@@ -104,8 +138,8 @@ class LValAST : public ExprAST {
  public:
   std::string ident;
 
-  std::string DumpKoopaValue(std::ostream &out) const override;
-  int EvalConst() const override;
+  ValueResult DumpKoopaValue(std::ostream &out) const override;
+  ConstValue EvalConst() const override;
 };
 
 // 一元表达式: +, -, ! 以及其操作数.
@@ -114,8 +148,8 @@ class UnaryExpAST : public ExprAST {
   char op = 0;
   std::unique_ptr<BaseAST> operand;
 
-  std::string DumpKoopaValue(std::ostream &out) const override;
-  int EvalConst() const override;
+  ValueResult DumpKoopaValue(std::ostream &out) const override;
+  ConstValue EvalConst() const override;
 };
 
 // 二元运算符枚举: 覆盖算术、比较与逻辑运算.
@@ -142,14 +176,15 @@ class BinaryExpAST : public ExprAST {
   std::unique_ptr<BaseAST> lhs;
   std::unique_ptr<BaseAST> rhs;
 
-  std::string DumpKoopaValue(std::ostream &out) const override;
-  int EvalConst() const override;
+  ValueResult DumpKoopaValue(std::ostream &out) const override;
+  ConstValue EvalConst() const override;
 };
 
 // 常量定义
 class ConstDefAST : public BaseAST {
  public:
   std::string ident;
+  ValueType value_type = ValueType::Int;
   std::unique_ptr<BaseAST> init;
 
   void DumpKoopa(std::ostream &out) const override;
@@ -167,6 +202,7 @@ class ConstDeclAST : public BaseAST {
 class VarDefAST : public BaseAST {
  public:
   std::string ident;
+  ValueType value_type = ValueType::Int;
   std::unique_ptr<BaseAST> init;
 
   void DumpKoopa(std::ostream &out) const override;

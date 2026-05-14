@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "ast.h"
 #include "koopa.h"
 
 class AsmGenerator {
@@ -41,12 +42,20 @@ class AsmGenerator {
   // 读取某个值到寄存器
   void LoadValue(const koopa_raw_value_t &value, const std::string &reg,
                  std::ostream &out);
+  // 读取浮点值到浮点寄存器
+  void LoadFloatValue(const koopa_raw_value_t &value, const std::string &reg,
+                      std::ostream &out);
   // 读取地址到寄存器
   void LoadAddress(const koopa_raw_value_t &value, const std::string &reg,
                    std::ostream &out);
   // 将寄存器写回到值对应的栈位置
   void StoreValue(const koopa_raw_value_t &value, const std::string &reg,
                   std::ostream &out);
+  // 将浮点寄存器写回到值对应的栈位置
+  void StoreFloatValue(const koopa_raw_value_t &value, const std::string &reg,
+                       std::ostream &out);
+  // 查询 Koopa 值的类型
+  ValueType GetValueType(const koopa_raw_value_t &value) const;
   // 判断类型是否为 unit
   bool IsUnitType(const koopa_raw_type_t &type) const;
   // 生成 sp 调整指令
@@ -54,7 +63,10 @@ class AsmGenerator {
   // 访问栈内偏移的内存
   void EmitLoadFromOffset(const std::string &reg, int offset, std::ostream &out);
   void EmitStoreToOffset(const std::string &reg, int offset, std::ostream &out);
+  void EmitLoadFromOffsetFloat(const std::string &reg, int offset, std::ostream &out);
+  void EmitStoreToOffsetFloat(const std::string &reg, int offset, std::ostream &out);
 
   std::unordered_map<koopa_raw_value_t, int> value_offsets_;
   int stack_size_ = 0;
+  ValueType current_return_type_ = ValueType::Int;
 };

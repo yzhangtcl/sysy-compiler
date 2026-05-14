@@ -1,6 +1,7 @@
 #include "ast.h"
 
 #include <cassert>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -9,24 +10,59 @@
 namespace {
 int g_temp_id = 0;
 int g_alloc_id = 0;
+std::unordered_map<std::string, ValueType> g_value_types;
+std::unordered_map<std::string, ValueType> g_function_return_types;
 
 struct SymbolInfo {
   enum class Kind { Const, Var };
   Kind kind = Kind::Const;
-  int const_value = 0;
+  ValueType value_type = ValueType::Int;
+  ConstValue const_value;
   std::string alloc_name;
 };
 
 std::vector<std::unordered_map<std::string, SymbolInfo>> g_scopes;
 
-std::string NextTemp() {
-  // 生成新的 SSA 临时值名
-  return "%" + std::to_string(g_temp_id++);
+std::string NextTemp(ValueType type) {
+  // 生成新的 SSA 临时值名, 前缀区分 int/float
+  const char *prefix = type == ValueType::Float ? "%f" : "%t";
+  return std::string(prefix) + std::to_string(g_temp_id++);
 }
 
 std::string NextAllocName(const std::string &ident) {
   // 生成唯一的 alloc 名称, 避免同名变量冲突
   return "@" + ident + "_" + std::to_string(g_alloc_id++);
+}
+
+int32_t FloatToBits(float value) {
+  // 将 float 视为 32-bit bit pattern
+  static_assert(sizeof(float) == sizeof(uint32_t));
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return static_cast<int32_t>(bits);
+}
+
+float ToFloat(const ConstValue &value) {
+  return value.type == ValueType::Float ? value.float_value
+                                        : static_cast<float>(value.int_value);
+}
+
+int32_t ToInt(const ConstValue &value) {
+  return value.type == ValueType::Int ? value.int_value
+                                      : static_cast<int32_t>(value.float_value);
+}
+
+ConstValue CastConstValue(const ConstValue &value, ValueType target) {
+  ConstValue result;
+  result.type = target;
+  if (target == ValueType::Float) {
+    result.float_value = ToFloat(value);
+    result.int_value = static_cast<int32_t>(result.float_value);
+    return result;
+  }
+  result.int_value = ToInt(value);
+  result.float_value = static_cast<float>(result.int_value);
+  return result;
 }
 
 void EnterScope() {
@@ -59,26 +95,56 @@ void InsertSymbol(const std::string &name, const SymbolInfo &info) {
   scope.emplace(name, info);
 }
 
-std::string EmitBinary(std::ostream &out, const std::string &op, const std::string &lhs,
-                       const std::string &rhs) {
-  // 输出一条二元指令并返回结果值名
-  std::string result = NextTemp();
+ValueResult EmitBinary(std::ostream &out, const std::string &op, const std::string &lhs,
+                       const std::string &rhs, ValueType result_type) {
+  // 输出一条二元指令并返回结果
+  std::string result = NextTemp(result_type);
   out << "  " << result << " = " << op << " " << lhs << ", " << rhs << "\n";
-  return result;
+  RegisterValueType(result, result_type);
+  return {result, result_type};
 }
 
-std::string EmitLoad(std::ostream &out, const std::string &addr) {
+ValueResult EmitLoad(std::ostream &out, const std::string &addr, ValueType result_type) {
   // 输出一条 load 指令
-  std::string result = NextTemp();
+  std::string result = NextTemp(result_type);
   out << "  " << result << " = load " << addr << "\n";
-  return result;
+  RegisterValueType(result, result_type);
+  return {result, result_type};
 }
 
-std::string EmitNotZero(std::ostream &out, const std::string &value) {
+ValueResult EmitNotZero(std::ostream &out, const ValueResult &value) {
   // 生成非零判断: value != 0
-  return EmitBinary(out, "ne", value, "0");
+  return EmitBinary(out, "ne", value.name, "0", ValueType::Int);
 }
 }  // namespace
+
+ValueType LookupValueType(const std::string &name) {
+  auto it = g_value_types.find(name);
+  if (it != g_value_types.end()) {
+    return it->second;
+  }
+  return ValueType::Int;
+}
+
+ValueType LookupFunctionReturnType(const std::string &name) {
+  auto it = g_function_return_types.find(name);
+  if (it != g_function_return_types.end()) {
+    return it->second;
+  }
+  return ValueType::Int;
+}
+
+void RegisterValueType(const std::string &name, ValueType type) {
+  g_value_types[name] = type;
+}
+
+void RegisterFunctionReturnType(const std::string &name, ValueType type) {
+  g_function_return_types[name] = type;
+}
+
+void ResetValueTypeTable() {
+  g_value_types.clear();
+}
 
 void CompUnitAST::DumpKoopa(std::ostream &out) const {
   // 顶层只包含一个函数定义
@@ -106,8 +172,8 @@ void ReturnStmtAST::DumpKoopa(std::ostream &out) const {
   // 生成 return 指令
   auto *expr = dynamic_cast<ExprAST *>(ret_exp.get());
   assert(expr != nullptr);
-  std::string value = expr->DumpKoopaValue(out);
-  out << "  ret " << value << "\n";
+  ValueResult value = expr->DumpKoopaValue(out);
+  out << "  ret " << value.name << "\n";
 }
 
 void AssignStmtAST::DumpKoopa(std::ostream &out) const {
@@ -117,8 +183,8 @@ void AssignStmtAST::DumpKoopa(std::ostream &out) const {
   assert(lhs != nullptr && rhs != nullptr);
   SymbolInfo *info = LookupSymbol(lhs->ident);
   assert(info != nullptr && info->kind == SymbolInfo::Kind::Var);
-  std::string rhs_value = rhs->DumpKoopaValue(out);
-  out << "  store " << rhs_value << ", " << info->alloc_name << "\n";
+  ValueResult rhs_value = rhs->DumpKoopaValue(out);
+  out << "  store " << rhs_value.name << ", " << info->alloc_name << "\n";
 }
 
 void FuncDefAST::DumpKoopa(std::ostream &out) const {
@@ -130,6 +196,9 @@ void FuncDefAST::DumpKoopa(std::ostream &out) const {
   g_temp_id = 0;
   g_alloc_id = 0;
   g_scopes.clear();
+  ResetValueTypeTable();
+  auto *type_ast = dynamic_cast<FuncTypeAST *>(func_type.get());
+  RegisterFunctionReturnType(ident, type_ast ? type_ast->value_type : ValueType::Int);
   EnterScope();
   // 输出函数体
   block->DumpKoopa(out);
@@ -138,123 +207,166 @@ void FuncDefAST::DumpKoopa(std::ostream &out) const {
   out << "}\n";
 }
 
-std::string NumberAST::DumpKoopaValue(std::ostream &out) const {
+ValueResult NumberAST::DumpKoopaValue(std::ostream &out) const {
   // 数字常量直接作为立即数返回
   (void)out;
-  return std::to_string(value);
+  return {std::to_string(value), ValueType::Int};
 }
 
-int NumberAST::EvalConst() const {
-  return value;
+ConstValue NumberAST::EvalConst() const {
+  ConstValue result;
+  result.type = ValueType::Int;
+  result.int_value = value;
+  result.float_value = static_cast<float>(value);
+  return result;
 }
 
-std::string PrimaryExpAST::DumpKoopaValue(std::ostream &out) const {
+ValueResult FloatNumberAST::DumpKoopaValue(std::ostream &out) const {
+  // 浮点常量以 bit pattern 形式落在 IR 中
+  int32_t bits = FloatToBits(value);
+  return EmitBinary(out, "add", "0", std::to_string(bits), ValueType::Float);
+}
+
+ConstValue FloatNumberAST::EvalConst() const {
+  ConstValue result;
+  result.type = ValueType::Float;
+  result.float_value = value;
+  result.int_value = static_cast<int32_t>(value);
+  return result;
+}
+
+ValueResult PrimaryExpAST::DumpKoopaValue(std::ostream &out) const {
   // 直接转发到内部表达式
   auto *expr = dynamic_cast<ExprAST *>(inner.get());
   assert(expr != nullptr);
   return expr->DumpKoopaValue(out);
 }
 
-int PrimaryExpAST::EvalConst() const {
+ConstValue PrimaryExpAST::EvalConst() const {
   auto *expr = dynamic_cast<ExprAST *>(inner.get());
   assert(expr != nullptr);
   return expr->EvalConst();
 }
 
-std::string LValAST::DumpKoopaValue(std::ostream &out) const {
+ValueResult LValAST::DumpKoopaValue(std::ostream &out) const {
   // 读取变量或常量
   SymbolInfo *info = LookupSymbol(ident);
   assert(info != nullptr);
   if (info->kind == SymbolInfo::Kind::Const) {
-    return std::to_string(info->const_value);
+    if (info->value_type == ValueType::Int) {
+      return {std::to_string(info->const_value.int_value), ValueType::Int};
+    }
+    int32_t bits = FloatToBits(info->const_value.float_value);
+    return EmitBinary(out, "add", "0", std::to_string(bits), ValueType::Float);
   }
-  return EmitLoad(out, info->alloc_name);
+  return EmitLoad(out, info->alloc_name, info->value_type);
 }
 
-int LValAST::EvalConst() const {
+ConstValue LValAST::EvalConst() const {
   SymbolInfo *info = LookupSymbol(ident);
   assert(info != nullptr && info->kind == SymbolInfo::Kind::Const);
   return info->const_value;
 }
 
-std::string UnaryExpAST::DumpKoopaValue(std::ostream &out) const {
+ValueResult UnaryExpAST::DumpKoopaValue(std::ostream &out) const {
   // 一元表达式: + 原值, - 变号, ! 逻辑非
   auto *expr = dynamic_cast<ExprAST *>(operand.get());
   assert(expr != nullptr);
-  std::string value = expr->DumpKoopaValue(out);
+  ValueResult value = expr->DumpKoopaValue(out);
   if (op == '+') {
     return value;
   }
   if (op == '-') {
-    return EmitBinary(out, "sub", "0", value);
+    return EmitBinary(out, "sub", "0", value.name, value.type);
   }
   if (op == '!') {
-    return EmitBinary(out, "eq", value, "0");
+    return EmitBinary(out, "eq", value.name, "0", ValueType::Int);
   }
   assert(false);
   return value;
 }
 
-int UnaryExpAST::EvalConst() const {
+ConstValue UnaryExpAST::EvalConst() const {
   auto *expr = dynamic_cast<ExprAST *>(operand.get());
   assert(expr != nullptr);
-  int value = expr->EvalConst();
+  ConstValue value = expr->EvalConst();
   if (op == '+') {
     return value;
   }
   if (op == '-') {
-    return -value;
+    if (value.type == ValueType::Float) {
+      value.float_value = -value.float_value;
+      value.int_value = static_cast<int32_t>(value.float_value);
+      return value;
+    }
+    value.int_value = -value.int_value;
+    value.float_value = static_cast<float>(value.int_value);
+    return value;
   }
   if (op == '!') {
-    return value == 0 ? 1 : 0;
+    ConstValue result;
+    result.type = ValueType::Int;
+    if (value.type == ValueType::Float) {
+      result.int_value = value.float_value == 0.0f ? 1 : 0;
+    } else {
+      result.int_value = value.int_value == 0 ? 1 : 0;
+    }
+    result.float_value = static_cast<float>(result.int_value);
+    return result;
   }
   assert(false);
   return value;
 }
 
-std::string BinaryExpAST::DumpKoopaValue(std::ostream &out) const {
+ValueResult BinaryExpAST::DumpKoopaValue(std::ostream &out) const {
   // 二元表达式: 先生成左右值, 再输出对应二元指令
   auto *left = dynamic_cast<ExprAST *>(lhs.get());
   auto *right = dynamic_cast<ExprAST *>(rhs.get());
   assert(left != nullptr && right != nullptr);
-  std::string lhs_value = left->DumpKoopaValue(out);
-  std::string rhs_value = right->DumpKoopaValue(out);
+  ValueResult lhs_value = left->DumpKoopaValue(out);
+  ValueResult rhs_value = right->DumpKoopaValue(out);
+  bool has_float = lhs_value.type == ValueType::Float || rhs_value.type == ValueType::Float;
 
   switch (op) {
     case BinaryOp::Add:
-      return EmitBinary(out, "add", lhs_value, rhs_value);
+      return EmitBinary(out, "add", lhs_value.name, rhs_value.name,
+                        has_float ? ValueType::Float : ValueType::Int);
     case BinaryOp::Sub:
-      return EmitBinary(out, "sub", lhs_value, rhs_value);
+      return EmitBinary(out, "sub", lhs_value.name, rhs_value.name,
+                        has_float ? ValueType::Float : ValueType::Int);
     case BinaryOp::Mul:
-      return EmitBinary(out, "mul", lhs_value, rhs_value);
+      return EmitBinary(out, "mul", lhs_value.name, rhs_value.name,
+                        has_float ? ValueType::Float : ValueType::Int);
     case BinaryOp::Div:
-      return EmitBinary(out, "div", lhs_value, rhs_value);
+      return EmitBinary(out, "div", lhs_value.name, rhs_value.name,
+                        has_float ? ValueType::Float : ValueType::Int);
     case BinaryOp::Mod:
-      return EmitBinary(out, "mod", lhs_value, rhs_value);
+      assert(!has_float);
+      return EmitBinary(out, "mod", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Lt:
-      return EmitBinary(out, "lt", lhs_value, rhs_value);
+      return EmitBinary(out, "lt", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Gt:
-      return EmitBinary(out, "gt", lhs_value, rhs_value);
+      return EmitBinary(out, "gt", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Le:
-      return EmitBinary(out, "le", lhs_value, rhs_value);
+      return EmitBinary(out, "le", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Ge:
-      return EmitBinary(out, "ge", lhs_value, rhs_value);
+      return EmitBinary(out, "ge", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Eq:
-      return EmitBinary(out, "eq", lhs_value, rhs_value);
+      return EmitBinary(out, "eq", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Ne:
-      return EmitBinary(out, "ne", lhs_value, rhs_value);
+      return EmitBinary(out, "ne", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::And: {
       // 逻辑与: 先归一化为 0/1, 再按位与并归一化
-      std::string lhs_bool = EmitNotZero(out, lhs_value);
-      std::string rhs_bool = EmitNotZero(out, rhs_value);
-      std::string and_value = EmitBinary(out, "and", lhs_bool, rhs_bool);
+      ValueResult lhs_bool = EmitNotZero(out, lhs_value);
+      ValueResult rhs_bool = EmitNotZero(out, rhs_value);
+      ValueResult and_value = EmitBinary(out, "and", lhs_bool.name, rhs_bool.name, ValueType::Int);
       return EmitNotZero(out, and_value);
     }
     case BinaryOp::Or: {
       // 逻辑或: 先归一化为 0/1, 再按位或并归一化
-      std::string lhs_bool = EmitNotZero(out, lhs_value);
-      std::string rhs_bool = EmitNotZero(out, rhs_value);
-      std::string or_value = EmitBinary(out, "or", lhs_bool, rhs_bool);
+      ValueResult lhs_bool = EmitNotZero(out, lhs_value);
+      ValueResult rhs_bool = EmitNotZero(out, rhs_value);
+      ValueResult or_value = EmitBinary(out, "or", lhs_bool.name, rhs_bool.name, ValueType::Int);
       return EmitNotZero(out, or_value);
     }
   }
@@ -262,39 +374,112 @@ std::string BinaryExpAST::DumpKoopaValue(std::ostream &out) const {
   return lhs_value;
 }
 
-int BinaryExpAST::EvalConst() const {
+ConstValue BinaryExpAST::EvalConst() const {
   auto *left = dynamic_cast<ExprAST *>(lhs.get());
   auto *right = dynamic_cast<ExprAST *>(rhs.get());
   assert(left != nullptr && right != nullptr);
-  int lhs_value = left->EvalConst();
-  int rhs_value = right->EvalConst();
+  ConstValue lhs_value = left->EvalConst();
+  ConstValue rhs_value = right->EvalConst();
+  bool has_float = lhs_value.type == ValueType::Float || rhs_value.type == ValueType::Float;
+
+  ConstValue result;
   switch (op) {
     case BinaryOp::Add:
-      return lhs_value + rhs_value;
+      if (has_float) {
+        result.type = ValueType::Float;
+        result.float_value = ToFloat(lhs_value) + ToFloat(rhs_value);
+        result.int_value = static_cast<int32_t>(result.float_value);
+        return result;
+      }
+      result.type = ValueType::Int;
+      result.int_value = lhs_value.int_value + rhs_value.int_value;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Sub:
-      return lhs_value - rhs_value;
+      if (has_float) {
+        result.type = ValueType::Float;
+        result.float_value = ToFloat(lhs_value) - ToFloat(rhs_value);
+        result.int_value = static_cast<int32_t>(result.float_value);
+        return result;
+      }
+      result.type = ValueType::Int;
+      result.int_value = lhs_value.int_value - rhs_value.int_value;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Mul:
-      return lhs_value * rhs_value;
+      if (has_float) {
+        result.type = ValueType::Float;
+        result.float_value = ToFloat(lhs_value) * ToFloat(rhs_value);
+        result.int_value = static_cast<int32_t>(result.float_value);
+        return result;
+      }
+      result.type = ValueType::Int;
+      result.int_value = lhs_value.int_value * rhs_value.int_value;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Div:
-      return lhs_value / rhs_value;
+      if (has_float) {
+        result.type = ValueType::Float;
+        result.float_value = ToFloat(lhs_value) / ToFloat(rhs_value);
+        result.int_value = static_cast<int32_t>(result.float_value);
+        return result;
+      }
+      result.type = ValueType::Int;
+      result.int_value = lhs_value.int_value / rhs_value.int_value;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Mod:
-      return lhs_value % rhs_value;
+      assert(!has_float);
+      result.type = ValueType::Int;
+      result.int_value = lhs_value.int_value % rhs_value.int_value;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Lt:
-      return lhs_value < rhs_value ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = has_float ? (ToFloat(lhs_value) < ToFloat(rhs_value) ? 1 : 0)
+                                   : (lhs_value.int_value < rhs_value.int_value ? 1 : 0);
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Gt:
-      return lhs_value > rhs_value ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = has_float ? (ToFloat(lhs_value) > ToFloat(rhs_value) ? 1 : 0)
+                                   : (lhs_value.int_value > rhs_value.int_value ? 1 : 0);
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Le:
-      return lhs_value <= rhs_value ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = has_float ? (ToFloat(lhs_value) <= ToFloat(rhs_value) ? 1 : 0)
+                                   : (lhs_value.int_value <= rhs_value.int_value ? 1 : 0);
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Ge:
-      return lhs_value >= rhs_value ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = has_float ? (ToFloat(lhs_value) >= ToFloat(rhs_value) ? 1 : 0)
+                                   : (lhs_value.int_value >= rhs_value.int_value ? 1 : 0);
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Eq:
-      return lhs_value == rhs_value ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = has_float ? (ToFloat(lhs_value) == ToFloat(rhs_value) ? 1 : 0)
+                                   : (lhs_value.int_value == rhs_value.int_value ? 1 : 0);
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Ne:
-      return lhs_value != rhs_value ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = has_float ? (ToFloat(lhs_value) != ToFloat(rhs_value) ? 1 : 0)
+                                   : (lhs_value.int_value != rhs_value.int_value ? 1 : 0);
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::And:
-      return (lhs_value != 0 && rhs_value != 0) ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = (ToFloat(lhs_value) != 0.0f && ToFloat(rhs_value) != 0.0f) ? 1 : 0;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
     case BinaryOp::Or:
-      return (lhs_value != 0 || rhs_value != 0) ? 1 : 0;
+      result.type = ValueType::Int;
+      result.int_value = (ToFloat(lhs_value) != 0.0f || ToFloat(rhs_value) != 0.0f) ? 1 : 0;
+      result.float_value = static_cast<float>(result.int_value);
+      return result;
   }
   assert(false);
   return lhs_value;
@@ -307,7 +492,8 @@ void ConstDefAST::DumpKoopa(std::ostream &out) const {
   assert(expr != nullptr);
   SymbolInfo info;
   info.kind = SymbolInfo::Kind::Const;
-  info.const_value = expr->EvalConst();
+  info.value_type = value_type;
+  info.const_value = CastConstValue(expr->EvalConst(), value_type);
   InsertSymbol(ident, info);
 }
 
@@ -322,14 +508,16 @@ void VarDefAST::DumpKoopa(std::ostream &out) const {
   // 变量定义: 生成 alloc, 可选初始化
   SymbolInfo info;
   info.kind = SymbolInfo::Kind::Var;
+  info.value_type = value_type;
   info.alloc_name = NextAllocName(ident);
   out << "  " << info.alloc_name << " = alloc i32\n";
+  RegisterValueType(info.alloc_name, value_type);
   InsertSymbol(ident, info);
   if (init) {
     auto *expr = dynamic_cast<ExprAST *>(init.get());
     assert(expr != nullptr);
-    std::string init_value = expr->DumpKoopaValue(out);
-    out << "  store " << init_value << ", " << info.alloc_name << "\n";
+    ValueResult init_value = expr->DumpKoopaValue(out);
+    out << "  store " << init_value.name << ", " << info.alloc_name << "\n";
   }
 }
 

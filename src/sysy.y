@@ -8,6 +8,7 @@
 %{
 
 #include "ast.h"
+#include <cassert>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -34,15 +35,18 @@ using namespace std;
 %union {
   std::string *str_val;
   int int_val;
+  double float_val;
+  ValueType type_val;
   BaseAST *ast_val;
   std::vector<BaseAST *> *ast_list;
 }
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
-%token INT RETURN CONST
+%token INT FLOAT RETURN CONST
 %token <str_val> IDENT
 %token <int_val> INT_CONST
+%token <float_val> FLOAT_CONST
 %token LE GE EQ NE AND OR
 
 // 非终结符的类型定义
@@ -51,6 +55,7 @@ using namespace std;
 %type <ast_val> InitVal LVal
 %type <ast_list> BlockItems ConstDefList VarDefList
 %type <int_val> Number
+%type <type_val> BType
 
 %%
 
@@ -92,7 +97,17 @@ FuncType
   : INT {
     auto ast = new FuncTypeAST();
     ast->name = "int";
+    ast->value_type = ValueType::Int;
     $$ = ast;
+  }
+  ;
+
+BType
+  : INT {
+    $$ = ValueType::Int;
+  }
+  | FLOAT {
+    $$ = ValueType::Float;
   }
   ;
 
@@ -136,9 +151,12 @@ Decl
   ;
 
 ConstDecl
-  : CONST INT ConstDefList ';' {
+  : CONST BType ConstDefList ';' {
     auto ast = new ConstDeclAST();
     for (auto *def : *$3) {
+      auto *typed_def = dynamic_cast<ConstDefAST *>(def);
+      assert(typed_def != nullptr);
+      typed_def->value_type = $2;
       ast->defs.emplace_back(def);
     }
     delete $3;
@@ -168,9 +186,12 @@ ConstDef
   ;
 
 VarDecl
-  : INT VarDefList ';' {
+  : BType VarDefList ';' {
     auto ast = new VarDeclAST();
     for (auto *def : *$2) {
+      auto *typed_def = dynamic_cast<VarDefAST *>(def);
+      assert(typed_def != nullptr);
+      typed_def->value_type = $1;
       ast->defs.emplace_back(def);
     }
     delete $2;
@@ -246,6 +267,13 @@ PrimaryExp
   | Number {
     auto number = new NumberAST();
     number->value = $1;
+    auto ast = new PrimaryExpAST();
+    ast->inner = std::unique_ptr<BaseAST>(number);
+    $$ = ast;
+  }
+  | FLOAT_CONST {
+    auto number = new FloatNumberAST();
+    number->value = static_cast<float>($1);
     auto ast = new PrimaryExpAST();
     ast->inner = std::unique_ptr<BaseAST>(number);
     $$ = ast;

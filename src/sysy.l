@@ -22,6 +22,20 @@ BlockComment   \/\*([^\*]*|[\*]+[^\*\/])*[\*]+\/
 /* 标识符 */
 Identifier    [a-zA-Z_][a-zA-Z0-9_]*
 
+/* 浮点字面量 */
+DecDigits     [0-9]+
+HexDigits     [0-9a-fA-F]+
+DecExponent   [eE][+-]?{DecDigits}
+HexExponent   [pP][+-]?{DecDigits}
+FloatSuffix   [fFlL]
+DecFloat1     {DecDigits}"."{DecDigits}?{DecExponent}?{FloatSuffix}?
+DecFloat2     "."{DecDigits}{DecExponent}?{FloatSuffix}?
+DecFloat3     {DecDigits}{DecExponent}{FloatSuffix}?
+HexFloat1     0[xX]{HexDigits}"."{HexDigits}?{HexExponent}{FloatSuffix}?
+HexFloat2     0[xX]{HexDigits}{HexExponent}{FloatSuffix}?
+HexFloat3     0[xX]"."{HexDigits}{HexExponent}{FloatSuffix}?
+FloatConst    {DecFloat1}|{DecFloat2}|{DecFloat3}|{HexFloat1}|{HexFloat2}|{HexFloat3}
+
 /* 整数字面量 */
 Decimal       [1-9][0-9]*
 Octal         0[0-7]*
@@ -33,6 +47,7 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 {LineComment}   { /* 忽略, 不做任何操作 */ }
 {BlockComment}   { /* 忽略, 不做任何操作 */ }
 "int"           { return INT; }
+"float"         { return FLOAT; }
 "const"         { return CONST; }
 "return"        { return RETURN; }
 "<="            { return LE; }
@@ -44,6 +59,7 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 
 {Identifier}    { yylval.str_val = new string(yytext); return IDENT; }
 
+{FloatConst}    { yylval.float_val = strtod(yytext, nullptr); return FLOAT_CONST; }
 {Decimal}       { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
 {Octal}         { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
 {Hexadecimal}   { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
