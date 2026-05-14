@@ -63,10 +63,10 @@ apt update
 apt install -y gcc-riscv64-linux-gnu qemu-user
 ```
 
-运行程序在 ./test 中，文件名为 test1.c，则测试命令为：
+测试程序在 `./test/` 中，文件名为 `test1.c`，则测试命令为：
 
 ```bash
 ./test.sh test1
 ```
 
-注意，当前测试方法只支持通过 return 的值来判断结果是否正确，具体请参考 `./test/test1` (内藏小彩蛋)
+注意，当前测试方法只支持通过 return 的值来判断结果是否正确，具体请参考 `./test/test1` (~~内藏小彩蛋~~)
