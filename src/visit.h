@@ -19,14 +19,19 @@ class AsmGenerator {
   void VisitFunction(const koopa_raw_function_t &func, std::ostream &out);
   // 访问基本块
   void VisitBasicBlock(const koopa_raw_basic_block_t &bb, std::ostream &out);
-  // 访问指令
+  // 访问指令 (按值类型)
   void VisitValue(const koopa_raw_value_t &value, std::ostream &out);
+  // 处理全局内存分配 (global alloc)
+  void VisitGlobalAlloc(const koopa_raw_value_t &value, std::ostream &out);
   // 处理 return 指令
   void VisitReturn(const koopa_raw_return_t &ret, std::ostream &out);
   // 处理 branch 指令
   void VisitBranch(const koopa_raw_branch_t &branch, std::ostream &out);
   // 处理 jump 指令
   void VisitJump(const koopa_raw_jump_t &jump, std::ostream &out);
+  // 处理 call 指令
+  void VisitCall(const koopa_raw_call_t &call, const koopa_raw_value_t &value,
+                 std::ostream &out);
   // 处理二元指令
   void VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw_value_t &value,
                    std::ostream &out);
@@ -41,7 +46,7 @@ class AsmGenerator {
   int32_t VisitInteger(const koopa_raw_integer_t &integer);
   // 输出函数的汇编标签
   void EmitFunctionLabel(const koopa_raw_function_t &func, std::ostream &out);
-  // 预处理函数, 计算栈空间并分配值的栈偏移
+  // 预处理函数, 计算栈空间 (含 ra/传参) 并分配值的栈偏移
   void PrepareFunction(const koopa_raw_function_t &func);
   // 读取某个值到寄存器
   void LoadValue(const koopa_raw_value_t &value, const std::string &reg,
@@ -77,6 +82,11 @@ class AsmGenerator {
   std::unordered_map<koopa_raw_basic_block_t, std::string> bb_labels_;
   koopa_raw_basic_block_t entry_bb_ = nullptr;
   std::string current_function_name_;
-  int stack_size_ = 0;
+  int stack_size_ = 0;       // 总栈空间 (向上对齐到 16)
+  int local_var_size_ = 0;   // 局部变量 + 临时值所占栈空间
+  bool has_call_ = false;    // 函数内是否有 call 指令 (决定是否保存 ra)
+  int max_call_args_ = 0;    // 最大调用参数个数 (决定栈传参预留空间)
+  int param_count_ = 0;      // 函数参数个数 (用于映射参数到 a0-a7)
   ValueType current_return_type_ = ValueType::Int;
+  bool data_section_opened_ = false;  // 是否已输出过 .data 段
 };

@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
-// 值类型: 当前支持 int 与 float.
-enum class ValueType { Int, Float };
+// 值类型: 当前支持 int, float 与 void (仅用于函数返回类型).
+enum class ValueType { Int, Float, Void };
 
 // 表达式生成的值与类型.
 struct ValueResult {
@@ -47,19 +47,19 @@ class ExprAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override { (void)DumpKoopaValue(out); }
 };
 
-// 编译单元: 当前仅包含一个函数定义.
+// 编译单元: 包含全局声明和函数定义列表.
 class CompUnitAST : public BaseAST {
  public:
-  // 顶层只包含一个函数定义
-  std::unique_ptr<BaseAST> func_def;
+  // 顶层可包含多个全局声明 (Decl) 或函数定义 (FuncDef)
+  std::vector<std::unique_ptr<BaseAST>> items;
 
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// 函数返回类型: 目前仅支持 int.
+// 函数返回类型: 支持 "int", "float", "void".
 class FuncTypeAST : public BaseAST {
  public:
-  // 函数返回类型名, 当前仅支持 "int"
+  // 函数返回类型名
   std::string name;
   ValueType value_type = ValueType::Int;
 
@@ -75,9 +75,10 @@ class BlockAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// return 语句.
+// return 语句: 可选的返回值, 用于 void 函数.
 class ReturnStmtAST : public BaseAST {
  public:
+  // 可选的返回表达式; 为空表示 void 返回
   std::unique_ptr<BaseAST> ret_exp;
 
   void DumpKoopa(std::ostream &out) const override;
@@ -137,15 +138,28 @@ class ContinueStmtAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// 函数定义: 定义函数名、返回类型与函数体.
+// 函数定义: 定义函数名、参数、返回类型与函数体.
 class FuncDefAST : public BaseAST {
  public:
   // 返回类型
   std::unique_ptr<BaseAST> func_type;
-  // 函数名, 本章固定为 main
+  // 函数名
   std::string ident;
+  // 形式参数列表 (FuncFParamAST)
+  std::vector<std::unique_ptr<BaseAST>> params;
   // 函数体
   std::unique_ptr<BaseAST> block;
+
+  void DumpKoopa(std::ostream &out) const override;
+};
+
+// 函数形式参数: 类型 + 标识符.
+class FuncFParamAST : public BaseAST {
+ public:
+  // 参数类型, 当前支持 int / float
+  ValueType value_type = ValueType::Int;
+  // 参数名
+  std::string ident;
 
   void DumpKoopa(std::ostream &out) const override;
 };
@@ -187,11 +201,14 @@ class LValAST : public ExprAST {
   ConstValue EvalConst() const override;
 };
 
-// 一元表达式: +, -, ! 以及其操作数.
+// 一元表达式: +, -, !, 函数调用以及其操作数.
 class UnaryExpAST : public ExprAST {
  public:
   char op = 0;
   std::unique_ptr<BaseAST> operand;
+  // 函数调用: op==0 且 call_ident 非空表示 func(args)
+  std::string call_ident;
+  std::vector<std::unique_ptr<BaseAST>> call_args;
 
   ValueResult DumpKoopaValue(std::ostream &out) const override;
   ConstValue EvalConst() const override;

@@ -12,18 +12,39 @@ int g_temp_id = 0;
 int g_alloc_id = 0;
 int g_block_id = 0;
 bool g_block_terminated = false;
+// 当前正在生成的函数的返回类型, 用于 return 语句
+ValueType g_current_func_return_type = ValueType::Int;
 std::unordered_map<std::string, ValueType> g_value_types;
 std::unordered_map<std::string, ValueType> g_function_return_types;
 
 struct SymbolInfo {
-  enum class Kind { Const, Var };
+  enum class Kind { Const, Var, FuncParam, GlobalVar };
   Kind kind = Kind::Const;
   ValueType value_type = ValueType::Int;
   ConstValue const_value;
-  std::string alloc_name;
+  std::string alloc_name;  // 局部变量/参数的 alloc 名; 全局变量则为全局符号名
 };
 
 std::vector<std::unordered_map<std::string, SymbolInfo>> g_scopes;
+
+// 库函数声明信息
+struct LibFuncInfo {
+  std::string name;
+  std::string param_types;  // e.g. "", "i32", "*i32", "i32, *i32"
+  std::string ret_type;     // e.g. "i32" or "" for void
+};
+
+// SysY 标准库函数列表
+static const std::vector<LibFuncInfo> g_lib_funcs = {
+  {"getint", "", "i32"},
+  {"getch", "", "i32"},
+  {"getarray", "*i32", "i32"},
+  {"putint", "i32", ""},
+  {"putch", "i32", ""},
+  {"putarray", "i32, *i32", ""},
+  {"starttime", "", ""},
+  {"stoptime", "", ""},
+};
 
 struct LoopContext {
   std::string entry_label;
@@ -31,6 +52,37 @@ struct LoopContext {
 };
 
 std::vector<LoopContext> g_loop_stack;
+
+// 输出所有 SysY 库函数的 decl 声明
+void EmitLibFuncDecls(std::ostream &out) {
+  for (const auto &func : g_lib_funcs) {
+    out << "decl @" << func.name << "(" << func.param_types << ")";
+    if (!func.ret_type.empty()) {
+      out << ": " << func.ret_type;
+    }
+    out << "\n";
+  }
+}
+
+// 将 SysY 库函数信息注册到全局符号表
+void RegisterLibFuncs() {
+  assert(!g_scopes.empty());
+  auto &global_scope = g_scopes.front();
+  for (const auto &func : g_lib_funcs) {
+    SymbolInfo info;
+    info.kind = SymbolInfo::Kind::Var;  // 用 Var 标记以免被当成常量
+    if (func.ret_type == "i32") {
+      info.value_type = ValueType::Int;
+    } else if (func.ret_type.empty()) {
+      info.value_type = ValueType::Void;
+    } else {
+      info.value_type = ValueType::Int;
+    }
+    info.alloc_name = "@" + func.name;
+    global_scope[func.name] = info;
+    RegisterFunctionReturnType(func.name, info.value_type);
+  }
+}
 
 std::string NextTemp(ValueType type) {
   // 生成新的 SSA 临时值名, 前缀区分 int/float
@@ -189,10 +241,59 @@ void ResetValueTypeTable() {
   g_value_types.clear();
 }
 
+// 标记当前是否在全局作用域内
+static bool g_in_global = false;
+
 void CompUnitAST::DumpKoopa(std::ostream &out) const {
-  // 顶层只包含一个函数定义
-  // 入口直接转发到函数定义
-  func_def->DumpKoopa(out);
+  // 编译单元: 按顺序输出全局声明与函数定义
+  // 1. 建立全局作用域
+  g_scopes.clear();
+  EnterScope();  // 全局作用域
+  RegisterLibFuncs();
+
+  // 2. 预注册所有函数名, 允许函数间相互调用 (无论定义顺序)
+  for (const auto &item : items) {
+    auto *func_def = dynamic_cast<FuncDefAST *>(item.get());
+    if (func_def) {
+      auto *type_ast = dynamic_cast<FuncTypeAST *>(func_def->func_type.get());
+      ValueType ret_type = type_ast ? type_ast->value_type : ValueType::Int;
+      SymbolInfo info;
+      info.kind = SymbolInfo::Kind::Var;  // 函数符号
+      info.value_type = ret_type;
+      info.alloc_name = "@" + func_def->ident;
+      RegisterFunctionReturnType(func_def->ident, ret_type);
+      InsertSymbol(func_def->ident, info);
+    }
+  }
+
+  // 3. 输出库函数 IR 声明
+  EmitLibFuncDecls(out);
+
+  // 4. 先处理所有全局声明 (Decl: VarDecl / ConstDecl)
+  g_in_global = true;
+  for (const auto &item : items) {
+    auto *var_decl = dynamic_cast<VarDeclAST *>(item.get());
+    if (var_decl) {
+      var_decl->DumpKoopa(out);
+      continue;
+    }
+    auto *const_decl = dynamic_cast<ConstDeclAST *>(item.get());
+    if (const_decl) {
+      const_decl->DumpKoopa(out);
+      continue;
+    }
+  }
+  g_in_global = false;
+
+  // 5. 再输出所有函数定义
+  for (const auto &item : items) {
+    auto *func_def = dynamic_cast<FuncDefAST *>(item.get());
+    if (func_def) {
+      func_def->DumpKoopa(out);
+    }
+  }
+
+  ExitScope();  // 退出全局作用域
 }
 
 void FuncTypeAST::DumpKoopa(std::ostream &out) const {
@@ -215,22 +316,28 @@ void BlockAST::DumpKoopa(std::ostream &out) const {
 }
 
 void ReturnStmtAST::DumpKoopa(std::ostream &out) const {
-  // 输出 return 指令及其返回值
-  // 生成 return 指令
-  auto *expr = dynamic_cast<ExprAST *>(ret_exp.get());
-  assert(expr != nullptr);
-  ValueResult value = expr->DumpKoopaValue(out);
-  out << "  ret " << value.name << "\n";
+  // 输出 return 指令: 有返回值时输出 ret value, void 时仅输出 ret
+  if (ret_exp) {
+    auto *expr = dynamic_cast<ExprAST *>(ret_exp.get());
+    assert(expr != nullptr);
+    ValueResult value = expr->DumpKoopaValue(out);
+    out << "  ret " << value.name << "\n";
+  } else {
+    // void 函数返回
+    out << "  ret\n";
+  }
   g_block_terminated = true;
 }
 
 void AssignStmtAST::DumpKoopa(std::ostream &out) const {
-  // 赋值语句: 计算右值并写回变量
+  // 赋值语句: 计算右值并写回变量 (支持全局/局部变量)
   auto *lhs = dynamic_cast<LValAST *>(lval.get());
   auto *rhs = dynamic_cast<ExprAST *>(value.get());
   assert(lhs != nullptr && rhs != nullptr);
   SymbolInfo *info = LookupSymbol(lhs->ident);
-  assert(info != nullptr && info->kind == SymbolInfo::Kind::Var);
+  assert(info != nullptr && (info->kind == SymbolInfo::Kind::Var ||
+         info->kind == SymbolInfo::Kind::FuncParam ||
+         info->kind == SymbolInfo::Kind::GlobalVar));
   ValueResult rhs_value = rhs->DumpKoopaValue(out);
   out << "  store " << rhs_value.name << ", " << info->alloc_name << "\n";
 }
@@ -319,24 +426,69 @@ void ContinueStmtAST::DumpKoopa(std::ostream &out) const {
 }
 
 void FuncDefAST::DumpKoopa(std::ostream &out) const {
-  // 输出函数定义与入口基本块
-  // 输出函数头和入口基本块
-  out << "fun @" << ident << "(): i32 {\n";
+  // 输出函数定义: fun @name(@param: type, ...): ret_type { ... }
+  auto *type_ast = dynamic_cast<FuncTypeAST *>(func_type.get());
+  ValueType ret_type = type_ast ? type_ast->value_type : ValueType::Int;
+  g_current_func_return_type = ret_type;
+  RegisterFunctionReturnType(ident, ret_type);
+
+  // 输出函数头
+  out << "fun @" << ident << "(";
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (i > 0) out << ", ";
+    auto *param = dynamic_cast<FuncFParamAST *>(params[i].get());
+    assert(param != nullptr);
+    out << "@" << param->ident << ": i32";
+  }
+  out << ")";
+  if (ret_type != ValueType::Void) {
+    out << ": i32";
+  }
+  out << " {\n";
+
   // 每个函数从 0 开始编号临时变量
   g_temp_id = 0;
   g_alloc_id = 0;
   g_block_id = 0;
   g_block_terminated = false;
-  g_scopes.clear();
   g_loop_stack.clear();
   ResetValueTypeTable();
-  auto *type_ast = dynamic_cast<FuncTypeAST *>(func_type.get());
-  RegisterFunctionReturnType(ident, type_ast ? type_ast->value_type : ValueType::Int);
+
+  // 建立函数作用域: 全局作用域已在 CompUnit 中设置, 此处进入函数局部作用域
   EnterScope();
+
   EmitLabel(out, "%entry");
+
+  // 为每个参数分配局部内存, 并把参数值 store 进去
+  for (const auto &param : params) {
+    auto *p = dynamic_cast<FuncFParamAST *>(param.get());
+    assert(p != nullptr);
+    SymbolInfo info;
+    info.kind = SymbolInfo::Kind::FuncParam;
+    info.value_type = p->value_type;
+    info.alloc_name = NextAllocName(p->ident);
+    out << "  " << info.alloc_name << " = alloc i32\n";
+    RegisterValueType(info.alloc_name, p->value_type);
+    // 将参数值存入局部 alloc
+    out << "  store @" << p->ident << ", " << info.alloc_name << "\n";
+    InsertSymbol(p->ident, info);
+  }
+
   // 输出函数体
   block->DumpKoopa(out);
-  ExitScope();
+
+  // 若函数体末尾未被 return/br/jump 终结, 补一个 ret
+  if (!IsBlockTerminated()) {
+    if (ret_type == ValueType::Void) {
+      out << "  ret\n";
+    } else {
+      // 非 void 函数隐式返回 0 (符合 SysY 规范)
+      out << "  ret 0\n";
+    }
+  }
+
+  ExitScope();  // 退出函数局部作用域
+
   // 结束函数
   out << "}\n";
 }
@@ -383,16 +535,22 @@ ConstValue PrimaryExpAST::EvalConst() const {
 }
 
 ValueResult LValAST::DumpKoopaValue(std::ostream &out) const {
-  // 读取变量或常量
+  // 读取变量或常量: 全局变量直接用 @name, 局部变量通过 alloc+load
   SymbolInfo *info = LookupSymbol(ident);
   assert(info != nullptr);
   if (info->kind == SymbolInfo::Kind::Const) {
+    // 常量: 直接返回编译期求值的立即数
     if (info->value_type == ValueType::Int) {
       return {std::to_string(info->const_value.int_value), ValueType::Int};
     }
     int32_t bits = FloatToBits(info->const_value.float_value);
     return EmitBinary(out, "add", "0", std::to_string(bits), ValueType::Float);
   }
+  // 全局变量: 直接用 @name 做 load
+  if (info->kind == SymbolInfo::Kind::GlobalVar) {
+    return EmitLoad(out, info->alloc_name, info->value_type);
+  }
+  // 局部变量或参数: 通过 alloc 名 load
   return EmitLoad(out, info->alloc_name, info->value_type);
 }
 
@@ -403,6 +561,46 @@ ConstValue LValAST::EvalConst() const {
 }
 
 ValueResult UnaryExpAST::DumpKoopaValue(std::ostream &out) const {
+  // 函数调用: call @name(args)
+  if (!call_ident.empty()) {
+    SymbolInfo *func_info = LookupSymbol(call_ident);
+    assert(func_info != nullptr);
+    ValueType ret_type = func_info->value_type;
+
+    // 先计算所有实参的值
+    std::vector<ValueResult> args;
+    for (const auto &arg : call_args) {
+      auto *expr = dynamic_cast<ExprAST *>(arg.get());
+      assert(expr != nullptr);
+      args.push_back(expr->DumpKoopaValue(out));
+    }
+
+    // 输出 call 指令
+    out << "  ";
+    if (ret_type != ValueType::Void) {
+      std::string result = NextTemp(ret_type);
+      out << result << " = ";
+      out << "call @" << call_ident << "(";
+      for (size_t i = 0; i < args.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << args[i].name;
+      }
+      out << ")\n";
+      RegisterValueType(result, ret_type);
+      return {result, ret_type};
+    } else {
+      // void 函数调用: 无返回值, 直接 call
+      out << "call @" << call_ident << "(";
+      for (size_t i = 0; i < args.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << args[i].name;
+      }
+      out << ")\n";
+      // void 调用返回一个 dummy 值 (不会被使用)
+      return {"0", ValueType::Void};
+    }
+  }
+
   // 一元表达式: + 原值, - 变号, ! 逻辑非
   auto *expr = dynamic_cast<ExprAST *>(operand.get());
   assert(expr != nullptr);
@@ -421,6 +619,8 @@ ValueResult UnaryExpAST::DumpKoopaValue(std::ostream &out) const {
 }
 
 ConstValue UnaryExpAST::EvalConst() const {
+  // 函数调用不可在编译期求值
+  assert(call_ident.empty());
   auto *expr = dynamic_cast<ExprAST *>(operand.get());
   assert(expr != nullptr);
   ConstValue value = expr->EvalConst();
@@ -683,20 +883,43 @@ void ConstDeclAST::DumpKoopa(std::ostream &out) const {
 }
 
 void VarDefAST::DumpKoopa(std::ostream &out) const {
-  // 变量定义: 生成 alloc, 可选初始化
+  // 全局/局部变量定义: 根据作用域生成不同的分配指令
   SymbolInfo info;
-  info.kind = SymbolInfo::Kind::Var;
+  info.kind = g_in_global ? SymbolInfo::Kind::GlobalVar : SymbolInfo::Kind::Var;
   info.value_type = value_type;
-  info.alloc_name = NextAllocName(ident);
-  out << "  " << info.alloc_name << " = alloc i32\n";
-  RegisterValueType(info.alloc_name, value_type);
-  InsertSymbol(ident, info);
-  if (init) {
-    auto *expr = dynamic_cast<ExprAST *>(init.get());
-    assert(expr != nullptr);
-    ValueResult init_value = expr->DumpKoopaValue(out);
-    out << "  store " << init_value.name << ", " << info.alloc_name << "\n";
+
+  if (g_in_global) {
+    // 全局变量: 使用 global alloc, 必须有初始值
+    info.alloc_name = "@" + ident;
+    // 计算初始值
+    if (init) {
+      auto *expr = dynamic_cast<ExprAST *>(init.get());
+      assert(expr != nullptr);
+      ConstValue init_value = CastConstValue(expr->EvalConst(), value_type);
+      if (value_type == ValueType::Float) {
+        int32_t bits = FloatToBits(init_value.float_value);
+        out << "global " << info.alloc_name << " = alloc i32, " << bits << "\n";
+      } else {
+        out << "global " << info.alloc_name << " = alloc i32, " << init_value.int_value << "\n";
+      }
+    } else {
+      // 未初始化全局变量: 使用 zeroinit
+      out << "global " << info.alloc_name << " = alloc i32, zeroinit\n";
+    }
+    RegisterValueType(info.alloc_name, value_type);
+  } else {
+    // 局部变量: 使用 alloc
+    info.alloc_name = NextAllocName(ident);
+    out << "  " << info.alloc_name << " = alloc i32\n";
+    RegisterValueType(info.alloc_name, value_type);
+    if (init) {
+      auto *expr = dynamic_cast<ExprAST *>(init.get());
+      assert(expr != nullptr);
+      ValueResult init_value = expr->DumpKoopaValue(out);
+      out << "  store " << init_value.name << ", " << info.alloc_name << "\n";
+    }
   }
+  InsertSymbol(ident, info);
 }
 
 void VarDeclAST::DumpKoopa(std::ostream &out) const {
@@ -704,4 +927,9 @@ void VarDeclAST::DumpKoopa(std::ostream &out) const {
   for (const auto &def : defs) {
     def->DumpKoopa(out);
   }
+}
+
+void FuncFParamAST::DumpKoopa(std::ostream &out) const {
+  // 形式参数由 FuncDefAST 统一处理, 本节点不单独输出 IR
+  (void)out;
 }

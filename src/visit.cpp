@@ -4,15 +4,15 @@
 #include <ostream>
 
 void AsmGenerator::Generate(const koopa_raw_program_t &program, std::ostream &out) {
-  // 遍历 raw program 中的所有函数并输出汇编
-  // 仅遍历函数列表
+  // 先生成全局变量 (data 段)
+  VisitSlice(program.values, out);
+  // 再遍历所有函数并输出汇编
   VisitSlice(program.funcs, out);
 }
 
 void AsmGenerator::VisitSlice(const koopa_raw_slice_t &slice, std::ostream &out) {
   // 根据 slice 元素类型分发到具体访问函数
   for (size_t i = 0; i < slice.len; ++i) {
-    // raw slice 的元素是 void* 指针, 需要按 kind 解释
     auto ptr = slice.buffer[i];
     switch (slice.kind) {
       case KOOPA_RSIK_FUNCTION:
@@ -22,7 +22,15 @@ void AsmGenerator::VisitSlice(const koopa_raw_slice_t &slice, std::ostream &out)
         VisitBasicBlock(reinterpret_cast<koopa_raw_basic_block_t>(ptr), out);
         break;
       case KOOPA_RSIK_VALUE:
-        VisitValue(reinterpret_cast<koopa_raw_value_t>(ptr), out);
+        // 全局值 (global alloc) 也以 VALUE 形式出现
+        {
+          auto value = reinterpret_cast<koopa_raw_value_t>(ptr);
+          if (value->kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
+            VisitGlobalAlloc(value, out);
+          } else {
+            VisitValue(value, out);
+          }
+        }
         break;
       default:
         assert(false);
@@ -31,20 +39,37 @@ void AsmGenerator::VisitSlice(const koopa_raw_slice_t &slice, std::ostream &out)
 }
 
 void AsmGenerator::VisitFunction(const koopa_raw_function_t &func, std::ostream &out) {
-  // 预处理函数并生成函数级汇编骨架
-  // 先输出函数标签再遍历基本块
+  // 跳过函数声明 (decl): 无基本块
+  if (func->bbs.len == 0) {
+    return;
+  }
+
+  // 解析函数名 (去掉 @ 前缀)
   const char *raw_name = func->name ? func->name : "@main";
   std::string func_name = raw_name;
   if (!func_name.empty() && func_name[0] == '@') {
     func_name.erase(0, 1);
   }
   current_function_name_ = func_name;
-  PrepareFunction(func);
   current_return_type_ = LookupFunctionReturnType(func_name);
+
+  // 预处理: 计算栈布局
+  PrepareFunction(func);
+
+  // 输出函数标签和 prologue
   EmitFunctionLabel(func, out);
+
+  // Prologue: 调整 sp, 必要时保存 ra
   if (stack_size_ > 0) {
     EmitAddiSp(-stack_size_, out);
   }
+  // 保存 ra 到栈帧顶部
+  if (has_call_) {
+    int ra_offset = stack_size_ - 4;
+    EmitStoreToOffset("ra", ra_offset, out);
+  }
+
+  // 遍历基本块
   VisitSlice(func->bbs, out);
 }
 
@@ -57,7 +82,6 @@ void AsmGenerator::VisitBasicBlock(const koopa_raw_basic_block_t &bb, std::ostre
 
 void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out) {
   // 按 Koopa 指令种类分发生成汇编
-  // 按指令类型分发
   const auto &kind = value->kind;
   switch (kind.tag) {
     case KOOPA_RVT_RETURN:
@@ -81,6 +105,9 @@ void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out)
     case KOOPA_RVT_BINARY:
       VisitBinary(kind.data.binary, value, out);
       break;
+    case KOOPA_RVT_CALL:
+      VisitCall(kind.data.call, value, out);
+      break;
     case KOOPA_RVT_INTEGER:
       (void)VisitInteger(kind.data.integer);
       break;
@@ -90,8 +117,7 @@ void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out)
 }
 
 void AsmGenerator::VisitReturn(const koopa_raw_return_t &ret, std::ostream &out) {
-  // 处理 return: 计算返回值并恢复栈帧
-  // 返回值按函数返回类型处理
+  // 处理 return: 计算返回值 (如果有) 并放到 a0/fa0, 然后恢复栈帧
   if (ret.value != nullptr) {
     ValueType value_type = GetValueType(ret.value);
     if (current_return_type_ == ValueType::Int) {
@@ -105,6 +131,7 @@ void AsmGenerator::VisitReturn(const koopa_raw_return_t &ret, std::ostream &out)
         LoadValue(ret.value, "a0", out);
       }
     } else {
+      // Float 返回类型
       if (value_type == ValueType::Float) {
         LoadFloatValue(ret.value, "fa0", out);
       } else {
@@ -113,10 +140,15 @@ void AsmGenerator::VisitReturn(const koopa_raw_return_t &ret, std::ostream &out)
       }
     }
   }
+
+  // Epilogue: 恢复 ra (如果需要), 恢复 sp, ret
+  if (has_call_) {
+    int ra_offset = stack_size_ - 4;
+    EmitLoadFromOffset("ra", ra_offset, out);
+  }
   if (stack_size_ > 0) {
     EmitAddiSp(stack_size_, out);
   }
-  // 函数返回
   out << "  ret\n";
 }
 
@@ -145,12 +177,17 @@ void AsmGenerator::VisitAlloc(const koopa_raw_value_t &value) {
 void AsmGenerator::VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value_t &value,
                              std::ostream &out) {
   // 读取地址指向的值, 并将结果写回栈
+  // 支持全局变量 (global alloc) 和局部变量 (alloc)
   ValueType value_type = GetValueType(value);
+
   if (value_type == ValueType::Float) {
     if (load.src->kind.tag == KOOPA_RVT_ALLOC) {
       auto it = value_offsets_.find(load.src);
       assert(it != value_offsets_.end());
       EmitLoadFromOffsetFloat("ft0", it->second, out);
+    } else if (load.src->kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
+      LoadAddress(load.src, "t1", out);
+      out << "  flw ft0, 0(t1)\n";
     } else {
       LoadAddress(load.src, "t1", out);
       out << "  flw ft0, 0(t1)\n";
@@ -163,6 +200,9 @@ void AsmGenerator::VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value
     auto it = value_offsets_.find(load.src);
     assert(it != value_offsets_.end());
     EmitLoadFromOffset("t0", it->second, out);
+  } else if (load.src->kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
+    LoadAddress(load.src, "t1", out);
+    out << "  lw t0, 0(t1)\n";
   } else {
     LoadAddress(load.src, "t1", out);
     out << "  lw t0, 0(t1)\n";
@@ -171,7 +211,7 @@ void AsmGenerator::VisitLoad(const koopa_raw_load_t &load, const koopa_raw_value
 }
 
 void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out) {
-  // 计算待写入的值
+  // 计算待写入的值, 支持全局变量目标
   ValueType dest_type = GetValueType(store.dest);
   ValueType value_type = GetValueType(store.value);
   if (dest_type == ValueType::Float) {
@@ -375,29 +415,105 @@ void AsmGenerator::VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw
 
 int32_t AsmGenerator::VisitInteger(const koopa_raw_integer_t &integer) {
   // 读取整数常量值
-  // 读取整数常量数值
   return integer.value;
+}
+
+void AsmGenerator::VisitCall(const koopa_raw_call_t &call, const koopa_raw_value_t &value,
+                             std::ostream &out) {
+  // 处理 call 指令: 将前 8 个参数放入 a0-a7, 超出部分放入栈帧
+  // 然后执行 call, 最后将返回值 (如果有) 写回栈
+  const char *callee_name = call.callee->name ? (call.callee->name + 1) : "main";
+  size_t arg_count = call.args.len;
+
+  // 将参数放入寄存器或栈
+  for (size_t i = 0; i < arg_count; ++i) {
+    auto arg = reinterpret_cast<koopa_raw_value_t>(call.args.buffer[i]);
+    if (i < 8) {
+      // 前 8 个参数: a0-a7
+      std::string reg = "a" + std::to_string(i);
+      LoadValue(arg, reg, out);
+    } else {
+      // 超出 8 个参数: 放入栈帧 (sp + (i - 8) * 4)
+      LoadValue(arg, "t0", out);
+      int offset = static_cast<int>(i - 8) * 4;
+      EmitStoreToOffset("t0", offset, out);
+    }
+  }
+
+  // 执行 call 指令
+  out << "  call " << callee_name << "\n";
+
+  // 将返回值 (如果有) 写回栈
+  if (!IsUnitType(value->ty)) {
+    ValueType ret_type = GetValueType(value);
+    if (ret_type == ValueType::Float) {
+      StoreFloatValue(value, "fa0", out);
+    } else {
+      StoreValue(value, "a0", out);
+    }
+  }
+}
+
+void AsmGenerator::VisitGlobalAlloc(const koopa_raw_value_t &value, std::ostream &out) {
+  // 处理全局内存分配: 输出 .data 段和符号定义
+  if (!data_section_opened_) {
+    out << "  .data\n";
+    data_section_opened_ = true;
+  }
+
+  // 解析全局变量名 (去掉 @ 前缀)
+  const char *raw_name = value->name ? value->name : "@global";
+  std::string name = raw_name;
+  if (!name.empty() && name[0] == '@') {
+    name.erase(0, 1);
+  }
+
+  out << "  .globl " << name << "\n";
+  out << name << ":\n";
+
+  // 根据初始化器类型输出
+  auto &kind = value->kind;
+  if (kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
+    auto init = kind.data.global_alloc.init;
+    if (init->kind.tag == KOOPA_RVT_ZERO_INIT) {
+      out << "  .zero 4\n";
+    } else if (init->kind.tag == KOOPA_RVT_INTEGER) {
+      int32_t val = init->kind.data.integer.value;
+      out << "  .word " << val << "\n";
+    } else {
+      // 未处理类型, 默认填 0
+      out << "  .zero 4\n";
+    }
+  }
 }
 
 void AsmGenerator::EmitFunctionLabel(const koopa_raw_function_t &func, std::ostream &out) {
   // 输出函数标签及其全局符号声明
-  // Koopa 函数名以 @ 开头, 汇编标签不带 @
   const char *name = func->name ? func->name : "@main";
   if (name[0] == '@') {
     ++name;
   }
-  // 输出段声明与全局符号
+  // 总是输出 .text 确保从 .data 切换回来
   out << "  .text\n";
   out << "  .globl " << name << "\n";
   out << name << ":\n";
 }
 
 void AsmGenerator::PrepareFunction(const koopa_raw_function_t &func) {
-  // 扫描函数内指令, 为需要落栈的值分配栈偏移
+  // 扫描函数内所有指令:
+  // 1. 为需要落栈的值分配栈偏移
+  // 2. 检测是否有 call 指令 (决定是否保存 ra)
+  // 3. 统计最大调用参数个数 (决定栈传参预留空间)
   value_offsets_.clear();
   bb_labels_.clear();
   entry_bb_ = nullptr;
+  has_call_ = false;
+  max_call_args_ = 0;
+  local_var_size_ = 0;
   stack_size_ = 0;
+  // 函数参数个数 (从 func->params 获取)
+  param_count_ = static_cast<int>(func->params.len);
+
   auto bbs = func->bbs;
   for (size_t i = 0; i < bbs.len; ++i) {
     auto bb = reinterpret_cast<koopa_raw_basic_block_t>(bbs.buffer[i]);
@@ -408,14 +524,49 @@ void AsmGenerator::PrepareFunction(const koopa_raw_function_t &func) {
     auto insts = bb->insts;
     for (size_t j = 0; j < insts.len; ++j) {
       auto value = reinterpret_cast<koopa_raw_value_t>(insts.buffer[j]);
+
+      // 检测 call 指令
+      if (value->kind.tag == KOOPA_RVT_CALL) {
+        has_call_ = true;
+        auto &call_data = value->kind.data.call;
+        // 统计参数个数
+        size_t arg_count = call_data.args.len;
+        if (static_cast<int>(arg_count) > max_call_args_) {
+          max_call_args_ = static_cast<int>(arg_count);
+        }
+      }
+
+      // 为有返回值的指令分配栈槽
       if (!IsUnitType(value->ty)) {
-        value_offsets_[value] = stack_size_;
-        stack_size_ += 4;
+        value_offsets_[value] = local_var_size_;
+        local_var_size_ += 4;
       }
     }
   }
+
+  // 计算总栈空间: 局部变量 + ra + 超 8 参数传参空间
+  // ra 占用 4 字节 (仅非叶子函数)
+  int ra_size = has_call_ ? 4 : 0;
+  // 超出 8 个参数的调用传参空间, 每个参数 4 字节
+  int arg_stack = (max_call_args_ > 8) ? (max_call_args_ - 8) * 4 : 0;
+  stack_size_ = local_var_size_ + ra_size + arg_stack;
+
+  // 向上对齐到 16 字节
   if (stack_size_ % 16 != 0) {
     stack_size_ = (stack_size_ + 15) / 16 * 16;
+  }
+
+  // 重新计算 ra 和局部变量在栈帧中的偏移:
+  // 栈帧布局 (从高地址到低地址):
+  //   sp + stack_size_ - 4: ra (如果保存)
+  //   sp + stack_size_ - 4 - ra_size: 局部变量区域
+  //   参数传参区域在栈顶部 (高地址), 但这里我们只需要在 call 时用 sp+offset 写入
+  //   所以局部变量的偏移需要调整
+
+  // 调整偏移: 传参区域在局部变量之上
+  int base = arg_stack;
+  for (auto &kv : value_offsets_) {
+    kv.second += base;
   }
 }
 
@@ -441,9 +592,26 @@ void AsmGenerator::LoadValue(const koopa_raw_value_t &value, const std::string &
     out << "  li " << reg << ", " << imm << "\n";
     return;
   }
+  // 函数参数引用: 从 a0-a7 中读取 (参数在函数入口时位于寄存器)
+  if (value->kind.tag == KOOPA_RVT_FUNC_ARG_REF) {
+    int param_index = value->kind.data.func_arg_ref.index;
+    if (param_index < 8) {
+      out << "  mv " << reg << ", a" << param_index << "\n";
+    } else {
+      // 超出 8 个参数在栈上 (sp + (param_index - 8) * 4 + offset_of_sp_adjustment)
+      int offset = (param_index - 8) * 4 + stack_size_;
+      EmitLoadFromOffset(reg, offset, out);
+    }
+    return;
+  }
   auto it = value_offsets_.find(value);
-  assert(it != value_offsets_.end());
-  EmitLoadFromOffset(reg, it->second, out);
+  if (it != value_offsets_.end()) {
+    EmitLoadFromOffset(reg, it->second, out);
+    return;
+  }
+  // 回退: 用 LoadAddress + lw 加载 (处理全局变量等未在栈中分配的值)
+  LoadAddress(value, "t1", out);
+  out << "  lw " << reg << ", 0(t1)\n";
 }
 
 void AsmGenerator::LoadFloatValue(const koopa_raw_value_t &value, const std::string &reg,
@@ -469,6 +637,16 @@ void AsmGenerator::LoadFloatValue(const koopa_raw_value_t &value, const std::str
 void AsmGenerator::LoadAddress(const koopa_raw_value_t &value, const std::string &reg,
                                std::ostream &out) {
   // 将地址类型的值加载到寄存器
+  // 全局变量: 使用 la 伪指令
+  if (value->kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
+    const char *name = value->name ? value->name : "@global";
+    if (name[0] == '@') {
+      ++name;
+    }
+    out << "  la " << reg << ", " << name << "\n";
+    return;
+  }
+  // 局部变量: sp + offset
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
   int offset = it->second;

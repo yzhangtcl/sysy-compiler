@@ -43,61 +43,115 @@ using namespace std;
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
-%token INT FLOAT RETURN CONST IF ELSE WHILE BREAK CONTINUE
+%token INT FLOAT VOID RETURN CONST IF ELSE WHILE BREAK CONTINUE
 %token <str_val> IDENT
 %token <int_val> INT_CONST
 %token <float_val> FLOAT_CONST
 %token LE GE EQ NE AND OR
 
 // 非终结符的类型定义
-%type <ast_val> FuncDef FuncType Block BlockItem Decl ConstDecl VarDecl ConstDef VarDef
+%type <ast_val> FuncDef Block BlockItem Decl ConstDecl VarDecl ConstDef VarDef
 %type <ast_val> Stmt MatchedStmt OpenStmt Exp PrimaryExp UnaryExp MulExp AddExp RelExp EqExp LAndExp LOrExp
-%type <ast_val> InitVal LVal
-%type <ast_list> BlockItems ConstDefList VarDefList
+%type <ast_val> InitVal LVal FuncFParam
+%type <ast_list> BlockItems ConstDefList VarDefList FuncFParams FuncRParams
 %type <int_val> Number
 %type <type_val> BType
 
 %%
 
-// 开始符, CompUnit ::= FuncDef, 大括号后声明了解析完成后 parser 要做的事情
-// 之前我们定义了 FuncDef 会返回一个 str_val, 也就是字符串指针
-// 而 parser 一旦解析完 CompUnit, 就说明所有的 token 都被解析了, 即解析结束了
-// 此时我们应该把 FuncDef 返回的结果收集起来, 作为 AST 传给调用 parser 的函数
-// $1 指代规则里第一个符号的返回值, 也就是 FuncDef 的返回值
+// CompUnit ::= [CompUnit] (Decl | FuncDef);
+// 顶层可包含多个全局声明和函数定义
 CompUnit
-  : FuncDef {
+  : {
     auto comp_unit = std::make_unique<CompUnitAST>();
-    comp_unit->func_def = std::unique_ptr<BaseAST>($1);
     ast = std::move(comp_unit);
+  }
+  | CompUnit Decl {
+    auto *comp_unit = dynamic_cast<CompUnitAST *>(ast.get());
+    assert(comp_unit != nullptr);
+    comp_unit->items.emplace_back($2);
+  }
+  | CompUnit FuncDef {
+    auto *comp_unit = dynamic_cast<CompUnitAST *>(ast.get());
+    assert(comp_unit != nullptr);
+    comp_unit->items.emplace_back($2);
   }
   ;
 
-// FuncDef ::= FuncType IDENT '(' ')' Block;
-// 我们这里可以直接写 '(' 和 ')', 因为之前在 lexer 里已经处理了单个字符的情况
-// 解析完成后, 把这些符号的结果收集起来, 然后拼成一个新的字符串, 作为结果返回
-// $$ 表示非终结符的返回值, 我们可以通过给这个符号赋值的方法来返回结果
-// 你可能会问, FuncType, IDENT 之类的结果已经是字符串指针了
-// 为什么还要用 unique_ptr 接住它们, 然后再解引用, 把它们拼成另一个字符串指针呢
-// 因为所有的字符串指针都是我们 new 出来的, new 出来的内存一定要 delete
-// 否则会发生内存泄漏, 而 unique_ptr 这种智能指针可以自动帮我们 delete
-// 虽然此处你看不出用 unique_ptr 和手动 delete 的区别, 但当我们定义了 AST 之后
-// 这种写法会省下很多内存管理的负担
+// FuncDef ::= FuncType IDENT '(' [FuncFParams] ')' Block;
+// FuncType 直接展开为 BType | VOID, 避免与 Decl 产生 reduce/reduce 冲突
 FuncDef
-  : FuncType IDENT '(' ')' Block {
+  : BType IDENT '(' ')' Block {
     auto ast = new FuncDefAST();
-    ast->func_type = std::unique_ptr<BaseAST>($1);
+    auto type_ast = new FuncTypeAST();
+    type_ast->value_type = $1;
+    type_ast->name = ($1 == ValueType::Int) ? "int" : "float";
+    ast->func_type = std::unique_ptr<BaseAST>(type_ast);
     ast->ident = *std::unique_ptr<std::string>($2);
     ast->block = std::unique_ptr<BaseAST>($5);
     $$ = ast;
   }
+  | BType IDENT '(' FuncFParams ')' Block {
+    auto ast = new FuncDefAST();
+    auto type_ast = new FuncTypeAST();
+    type_ast->value_type = $1;
+    type_ast->name = ($1 == ValueType::Int) ? "int" : "float";
+    ast->func_type = std::unique_ptr<BaseAST>(type_ast);
+    ast->ident = *std::unique_ptr<std::string>($2);
+    for (auto *param : *$4) {
+      ast->params.emplace_back(param);
+    }
+    delete $4;
+    ast->block = std::unique_ptr<BaseAST>($6);
+    $$ = ast;
+  }
+  | VOID IDENT '(' ')' Block {
+    auto ast = new FuncDefAST();
+    auto type_ast = new FuncTypeAST();
+    type_ast->value_type = ValueType::Void;
+    type_ast->name = "void";
+    ast->func_type = std::unique_ptr<BaseAST>(type_ast);
+    ast->ident = *std::unique_ptr<std::string>($2);
+    ast->block = std::unique_ptr<BaseAST>($5);
+    $$ = ast;
+  }
+  | VOID IDENT '(' FuncFParams ')' Block {
+    auto ast = new FuncDefAST();
+    auto type_ast = new FuncTypeAST();
+    type_ast->value_type = ValueType::Void;
+    type_ast->name = "void";
+    ast->func_type = std::unique_ptr<BaseAST>(type_ast);
+    ast->ident = *std::unique_ptr<std::string>($2);
+    for (auto *param : *$4) {
+      ast->params.emplace_back(param);
+    }
+    delete $4;
+    ast->block = std::unique_ptr<BaseAST>($6);
+    $$ = ast;
+  }
   ;
 
-// 同上, 不再解释
-FuncType
-  : INT {
-    auto ast = new FuncTypeAST();
-    ast->name = "int";
-    ast->value_type = ValueType::Int;
+// BType ::= "int" | "float";
+
+// FuncFParams ::= FuncFParam {"," FuncFParam};
+FuncFParams
+  : FuncFParam {
+    auto params = new std::vector<BaseAST *>();
+    params->push_back($1);
+    $$ = params;
+  }
+  | FuncFParams ',' FuncFParam {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+// FuncFParam ::= BType IDENT;
+FuncFParam
+  : BType IDENT {
+    auto ast = new FuncFParamAST();
+    ast->value_type = $1;
+    ast->ident = *std::unique_ptr<std::string>($2);
     $$ = ast;
   }
   ;
@@ -246,6 +300,11 @@ MatchedStmt
     ast->ret_exp = std::unique_ptr<BaseAST>($2);
     $$ = ast;
   }
+  | RETURN ';' {
+    // 无返回值 return, 用于 void 函数
+    auto ast = new ReturnStmtAST();
+    $$ = ast;
+  }
   | BREAK ';' {
     auto ast = new BreakStmtAST();
     $$ = ast;
@@ -355,7 +414,7 @@ LVal
   ;
 
 UnaryExp
-  // 一元表达式: 基本表达式或前缀一元运算
+  // 一元表达式: 基本表达式 或 前缀一元运算 或 函数调用
   : PrimaryExp {
     $$ = $1;
   }
@@ -376,6 +435,35 @@ UnaryExp
     ast->op = '!';
     ast->operand = std::unique_ptr<BaseAST>($2);
     $$ = ast;
+  }
+  | IDENT '(' ')' {
+    // 无参函数调用: ident()
+    auto ast = new UnaryExpAST();
+    ast->call_ident = *std::unique_ptr<std::string>($1);
+    $$ = ast;
+  }
+  | IDENT '(' FuncRParams ')' {
+    // 有参函数调用: ident(args)
+    auto ast = new UnaryExpAST();
+    ast->call_ident = *std::unique_ptr<std::string>($1);
+    for (auto *arg : *$3) {
+      ast->call_args.emplace_back(arg);
+    }
+    delete $3;
+    $$ = ast;
+  }
+  ;
+
+// FuncRParams ::= Exp {"," Exp};
+FuncRParams
+  : Exp {
+    auto args = new std::vector<BaseAST *>();
+    args->push_back($1);
+    $$ = args;
+  }
+  | FuncRParams ',' Exp {
+    $1->push_back($3);
+    $$ = $1;
   }
   ;
 

@@ -94,3 +94,39 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
 - 前端语法扩展: 增加 while、break、continue 语句, 同样按 matched/open 处理 while 体的悬挂 else。
 - AST 扩展: 新增 while/break/continue 节点, 统一纳入语句生成流程。
 - IR 生成: 生成 while 的条件块/循环体/结束块, 维护循环栈以定位 break/continue 的跳转目标。
+## lv8-func-n-global
+
+为支持函数定义与调用、SysY 库函数和全局变量, 本阶段做了如下改动:
+
+### 前端词法扩展
+- 新增 `void` 关键字, 支持无返回值函数类型.
+
+### 前端语法扩展
+- `CompUnit` 重构为支持多个顶层的 `Decl` 和 `FuncDef`, 允许全局变量/常量与函数共存.
+- `FuncDef` 增加形式参数列表 `FuncFParams`, 支持 `int`/`float`/`void` 返回类型.
+- `UnaryExp` 新增函数调用产生式 `IDENT '(' [FuncRParams] ')'`, 支持有参/无参调用.
+- `return` 语句支持无表达式形式 (`return ;`), 用于 void 函数.
+
+### AST 扩展
+- 新增 `FuncFParamAST` 表示函数形式参数 (类型 + 标识符).
+- `FuncDefAST` 扩展为包含参数列表和 void 返回类型.
+- `UnaryExpAST` 扩展为同时承载一元运算和函数调用 (通过 `call_ident`/`call_args`).
+- `CompUnitAST` 改为持有 `vector<BaseAST>` 以容纳多个顶层声明/定义.
+- `ReturnStmtAST` 改为可选返回值 (用于 void 函数).
+
+### 语义分析与 IR 生成
+- 建立全局作用域: `CompUnit` 输出时先进入全局作用域, 注册 8 个 SysY 库函数符号.
+- 库函数声明: 自动在 IR 头部输出所有库函数的 `decl` 语句 (getint/getch/getarray/putint/putch/putarray/starttime/stoptime).
+- 函数定义: 生成 `fun @name(@param: i32, ...): ret_type { ... }`, 入口处为每个参数分配局部内存并 store 参数值.
+- 函数调用: 有返回值时生成 `%v = call @name(args)`, void 函数生成 `call @name(args)`.
+- 全局变量: 使用 `global @var = alloc i32, zeroinit` (带初值则写入具体值), 读写直接使用 `@var` 符号.
+- 全局常量: 同局部常量在编译期求值, 仅存入全局符号表.
+
+### 汇编生成 (RISC-V)
+- **函数定义与标签**: 为每个非声明函数生成 `.globl` 标签和 `.text` 段声明 (仅首次).
+- **栈帧管理**: 预处理阶段扫描函数内所有指令, 统计局部变量空间、是否有 `call` 指令 (决定 `ra` 保存)、最大调用参数个数 (决定栈传参预留空间). 栈空间对齐到 16 字节.
+- **Prologue**: `addi sp, sp, -frame_size`; 非叶子函数保存 `ra` 到栈帧顶部.
+- **Epilogue**: 恢复 `ra` (如需要) → 恢复 `sp` → `ret`.
+- **函数调用 (call)**: 前 8 个参数依次放入 `a0`-`a7`, 超出部分存入 `sp + (i-8)*4`; 执行 `call` 指令后, 返回值从 `a0` (整型) 写入栈槽.
+- **全局变量**: 输出 `.data` 段, 使用 `.globl`/`.zero`/`.word` 定义全局符号; 在函数内通过 `la` + `lw`/`sw` 访问.
+- **库函数调用**: 与普通函数调用一致, 链接器负责解析外部符号.
