@@ -86,3 +86,11 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
 - 前端语法扩展: 增加 if/else 语句并通过 matched/open 拆分解决悬挂 else。
 - AST 与 IR 生成: 新增 if 语句节点, 生成 br/jump 与基本块标签; 逻辑与/或改为短路求值。
 - 汇编生成: 新增 branch/jump 指令翻译, 输出基本块标签并使用 bnez/j 完成控制流跳转。
+
+## lv7-while
+
+为支持 while/break/continue, 本阶段做了如下改动:
+
+- 前端语法扩展: 增加 while、break、continue 语句, 同样按 matched/open 处理 while 体的悬挂 else。
+- AST 扩展: 新增 while/break/continue 节点, 统一纳入语句生成流程。
+- IR 生成: 生成 while 的条件块/循环体/结束块, 维护循环栈以定位 break/continue 的跳转目标。

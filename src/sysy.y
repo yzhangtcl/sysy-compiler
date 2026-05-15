@@ -43,7 +43,7 @@ using namespace std;
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
-%token INT FLOAT RETURN CONST IF ELSE
+%token INT FLOAT RETURN CONST IF ELSE WHILE BREAK CONTINUE
 %token <str_val> IDENT
 %token <int_val> INT_CONST
 %token <float_val> FLOAT_CONST
@@ -246,6 +246,14 @@ MatchedStmt
     ast->ret_exp = std::unique_ptr<BaseAST>($2);
     $$ = ast;
   }
+  | BREAK ';' {
+    auto ast = new BreakStmtAST();
+    $$ = ast;
+  }
+  | CONTINUE ';' {
+    auto ast = new ContinueStmtAST();
+    $$ = ast;
+  }
   | LVal '=' Exp ';' {
     auto ast = new AssignStmtAST();
     ast->lval = std::unique_ptr<BaseAST>($1);
@@ -273,6 +281,12 @@ MatchedStmt
     ast->else_stmt = std::unique_ptr<BaseAST>($7);
     $$ = ast;
   }
+  | WHILE '(' Exp ')' MatchedStmt {
+    auto ast = new WhileStmtAST();
+    ast->cond = std::unique_ptr<BaseAST>($3);
+    ast->body = std::unique_ptr<BaseAST>($5);
+    $$ = ast;
+  }
   ;
 
 OpenStmt
@@ -287,6 +301,12 @@ OpenStmt
     ast->cond = std::unique_ptr<BaseAST>($3);
     ast->then_stmt = std::unique_ptr<BaseAST>($5);
     ast->else_stmt = std::unique_ptr<BaseAST>($7);
+    $$ = ast;
+  }
+  | WHILE '(' Exp ')' OpenStmt {
+    auto ast = new WhileStmtAST();
+    ast->cond = std::unique_ptr<BaseAST>($3);
+    ast->body = std::unique_ptr<BaseAST>($5);
     $$ = ast;
   }
   ;

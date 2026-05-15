@@ -114,6 +114,29 @@ class IfStmtAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
+// while 语句: 条件表达式 + 循环体.
+class WhileStmtAST : public BaseAST {
+ public:
+  // 循环条件表达式
+  std::unique_ptr<BaseAST> cond;
+  // 循环体语句
+  std::unique_ptr<BaseAST> body;
+
+  void DumpKoopa(std::ostream &out) const override;
+};
+
+// break 语句.
+class BreakStmtAST : public BaseAST {
+ public:
+  void DumpKoopa(std::ostream &out) const override;
+};
+
+// continue 语句.
+class ContinueStmtAST : public BaseAST {
+ public:
+  void DumpKoopa(std::ostream &out) const override;
+};
+
 // 函数定义: 定义函数名、返回类型与函数体.
 class FuncDefAST : public BaseAST {
  public:

@@ -25,6 +25,13 @@ struct SymbolInfo {
 
 std::vector<std::unordered_map<std::string, SymbolInfo>> g_scopes;
 
+struct LoopContext {
+  std::string entry_label;
+  std::string end_label;
+};
+
+std::vector<LoopContext> g_loop_stack;
+
 std::string NextTemp(ValueType type) {
   // 生成新的 SSA 临时值名, 前缀区分 int/float
   const char *prefix = type == ValueType::Float ? "%f" : "%t";
@@ -146,6 +153,12 @@ void EmitBranch(std::ostream &out, const std::string &cond, const std::string &t
 bool IsBlockTerminated() {
   return g_block_terminated;
 }
+
+const LoopContext &CurrentLoop() {
+  // break/continue 需要确保处于循环上下文中
+  assert(!g_loop_stack.empty());
+  return g_loop_stack.back();
+}
 }  // namespace
 
 ValueType LookupValueType(const std::string &name) {
@@ -263,6 +276,48 @@ void IfStmtAST::DumpKoopa(std::ostream &out) const {
   EmitLabel(out, end_label);
 }
 
+void WhileStmtAST::DumpKoopa(std::ostream &out) const {
+  // while 语句: 生成条件块、循环体与结束块
+  auto *cond_expr = dynamic_cast<ExprAST *>(cond.get());
+  assert(cond_expr != nullptr);
+
+  std::string entry_label = NextBlockLabel("while_entry");
+  std::string body_label = NextBlockLabel("while_body");
+  std::string end_label = NextBlockLabel("while_end");
+
+  EmitJump(out, entry_label);
+
+  EmitLabel(out, entry_label);
+  ValueResult cond_value = cond_expr->DumpKoopaValue(out);
+  ValueResult cond_bool = EmitNotZero(out, cond_value);
+  EmitBranch(out, cond_bool.name, body_label, end_label);
+
+  EmitLabel(out, body_label);
+  // 记录当前循环的入口与退出位置, 供 break/continue 使用
+  g_loop_stack.push_back({entry_label, end_label});
+  body->DumpKoopa(out);
+  g_loop_stack.pop_back();
+  if (!IsBlockTerminated()) {
+    EmitJump(out, entry_label);
+  }
+
+  EmitLabel(out, end_label);
+}
+
+void BreakStmtAST::DumpKoopa(std::ostream &out) const {
+  // break: 跳转到最近一层循环的结束块
+  (void)out;
+  const auto &loop = CurrentLoop();
+  EmitJump(out, loop.end_label);
+}
+
+void ContinueStmtAST::DumpKoopa(std::ostream &out) const {
+  // continue: 跳转到最近一层循环的条件块
+  (void)out;
+  const auto &loop = CurrentLoop();
+  EmitJump(out, loop.entry_label);
+}
+
 void FuncDefAST::DumpKoopa(std::ostream &out) const {
   // 输出函数定义与入口基本块
   // 输出函数头和入口基本块
@@ -273,6 +328,7 @@ void FuncDefAST::DumpKoopa(std::ostream &out) const {
   g_block_id = 0;
   g_block_terminated = false;
   g_scopes.clear();
+  g_loop_stack.clear();
   ResetValueTypeTable();
   auto *type_ast = dynamic_cast<FuncTypeAST *>(func_type.get());
   RegisterFunctionReturnType(ident, type_ast ? type_ast->value_type : ValueType::Int);
