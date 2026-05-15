@@ -187,6 +187,16 @@ void AssignStmtAST::DumpKoopa(std::ostream &out) const {
   out << "  store " << rhs_value.name << ", " << info->alloc_name << "\n";
 }
 
+void ExprStmtAST::DumpKoopa(std::ostream &out) const {
+  // 表达式语句需要保留副作用, 空语句不输出任何 IR
+  if (!expr) {
+    return;
+  }
+  auto *stmt_expr = dynamic_cast<ExprAST *>(expr.get());
+  assert(stmt_expr != nullptr);
+  (void)stmt_expr->DumpKoopaValue(out);
+}
+
 void FuncDefAST::DumpKoopa(std::ostream &out) const {
   // 输出函数定义与入口基本块
   // 输出函数头和入口基本块

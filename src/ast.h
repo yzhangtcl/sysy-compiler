@@ -66,7 +66,7 @@ class FuncTypeAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// 语句块: 目前只包含单条语句.
+// 语句块: 包含多条语句或声明.
 class BlockAST : public BaseAST {
  public:
   // 块内语句或声明列表
@@ -88,6 +88,15 @@ class AssignStmtAST : public BaseAST {
  public:
   std::unique_ptr<BaseAST> lval;
   std::unique_ptr<BaseAST> value;
+
+  void DumpKoopa(std::ostream &out) const override;
+};
+
+// 表达式语句: 可为空 (单独的分号).
+class ExprStmtAST : public BaseAST {
+ public:
+  // 可选表达式, 为空表示仅包含 ';'
+  std::unique_ptr<BaseAST> expr;
 
   void DumpKoopa(std::ostream &out) const override;
 };

@@ -243,6 +243,20 @@ Stmt
     ast->value = std::unique_ptr<BaseAST>($3);
     $$ = ast;
   }
+  | Block {
+    // 语句块本身也是一条语句
+    $$ = $1;
+  }
+  | Exp ';' {
+    auto ast = new ExprStmtAST();
+    ast->expr = std::unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  | ';' {
+    auto ast = new ExprStmtAST();
+    // 空语句: expr 为空
+    $$ = ast;
+  }
   ;
 
 Exp
