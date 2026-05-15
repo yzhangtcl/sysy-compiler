@@ -10,6 +10,8 @@
 namespace {
 int g_temp_id = 0;
 int g_alloc_id = 0;
+int g_block_id = 0;
+bool g_block_terminated = false;
 std::unordered_map<std::string, ValueType> g_value_types;
 std::unordered_map<std::string, ValueType> g_function_return_types;
 
@@ -32,6 +34,11 @@ std::string NextTemp(ValueType type) {
 std::string NextAllocName(const std::string &ident) {
   // 生成唯一的 alloc 名称, 避免同名变量冲突
   return "@" + ident + "_" + std::to_string(g_alloc_id++);
+}
+
+std::string NextBlockLabel(const std::string &prefix) {
+  // 生成唯一的基本块标签
+  return "%" + prefix + "_" + std::to_string(g_block_id++);
 }
 
 int32_t FloatToBits(float value) {
@@ -116,6 +123,29 @@ ValueResult EmitNotZero(std::ostream &out, const ValueResult &value) {
   // 生成非零判断: value != 0
   return EmitBinary(out, "ne", value.name, "0", ValueType::Int);
 }
+
+void EmitLabel(std::ostream &out, const std::string &label) {
+  // 输出基本块标签并重置终结状态
+  out << label << ":\n";
+  g_block_terminated = false;
+}
+
+void EmitJump(std::ostream &out, const std::string &label) {
+  // 输出无条件跳转, 终结当前基本块
+  out << "  jump " << label << "\n";
+  g_block_terminated = true;
+}
+
+void EmitBranch(std::ostream &out, const std::string &cond, const std::string &true_label,
+                const std::string &false_label) {
+  // 输出条件分支, 终结当前基本块
+  out << "  br " << cond << ", " << true_label << ", " << false_label << "\n";
+  g_block_terminated = true;
+}
+
+bool IsBlockTerminated() {
+  return g_block_terminated;
+}
 }  // namespace
 
 ValueType LookupValueType(const std::string &name) {
@@ -162,6 +192,10 @@ void BlockAST::DumpKoopa(std::ostream &out) const {
   // 输出块内所有语句或声明
   EnterScope();
   for (const auto &item : items) {
+    if (IsBlockTerminated()) {
+      // 当前基本块已结束, 剩余语句不可达
+      break;
+    }
     item->DumpKoopa(out);
   }
   ExitScope();
@@ -174,6 +208,7 @@ void ReturnStmtAST::DumpKoopa(std::ostream &out) const {
   assert(expr != nullptr);
   ValueResult value = expr->DumpKoopaValue(out);
   out << "  ret " << value.name << "\n";
+  g_block_terminated = true;
 }
 
 void AssignStmtAST::DumpKoopa(std::ostream &out) const {
@@ -197,19 +232,52 @@ void ExprStmtAST::DumpKoopa(std::ostream &out) const {
   (void)stmt_expr->DumpKoopaValue(out);
 }
 
+void IfStmtAST::DumpKoopa(std::ostream &out) const {
+  // if 语句: 生成条件分支与汇合基本块
+  auto *cond_expr = dynamic_cast<ExprAST *>(cond.get());
+  assert(cond_expr != nullptr);
+
+  ValueResult cond_value = cond_expr->DumpKoopaValue(out);
+  ValueResult cond_bool = EmitNotZero(out, cond_value);
+
+  std::string then_label = NextBlockLabel("if_then");
+  std::string end_label = NextBlockLabel("if_end");
+  std::string else_label = else_stmt ? NextBlockLabel("if_else") : end_label;
+
+  EmitBranch(out, cond_bool.name, then_label, else_label);
+
+  EmitLabel(out, then_label);
+  then_stmt->DumpKoopa(out);
+  if (!IsBlockTerminated()) {
+    EmitJump(out, end_label);
+  }
+
+  if (else_stmt) {
+    EmitLabel(out, else_label);
+    else_stmt->DumpKoopa(out);
+    if (!IsBlockTerminated()) {
+      EmitJump(out, end_label);
+    }
+  }
+
+  EmitLabel(out, end_label);
+}
+
 void FuncDefAST::DumpKoopa(std::ostream &out) const {
   // 输出函数定义与入口基本块
   // 输出函数头和入口基本块
   out << "fun @" << ident << "(): i32 {\n";
-  out << "%entry:\n";
   // 每个函数从 0 开始编号临时变量
   g_temp_id = 0;
   g_alloc_id = 0;
+  g_block_id = 0;
+  g_block_terminated = false;
   g_scopes.clear();
   ResetValueTypeTable();
   auto *type_ast = dynamic_cast<FuncTypeAST *>(func_type.get());
   RegisterFunctionReturnType(ident, type_ast ? type_ast->value_type : ValueType::Int);
   EnterScope();
+  EmitLabel(out, "%entry");
   // 输出函数体
   block->DumpKoopa(out);
   ExitScope();
@@ -333,6 +401,61 @@ ValueResult BinaryExpAST::DumpKoopaValue(std::ostream &out) const {
   auto *left = dynamic_cast<ExprAST *>(lhs.get());
   auto *right = dynamic_cast<ExprAST *>(rhs.get());
   assert(left != nullptr && right != nullptr);
+
+  if (op == BinaryOp::And || op == BinaryOp::Or) {
+    // 逻辑与/或: 使用分支实现短路求值
+    ValueResult lhs_value = left->DumpKoopaValue(out);
+    ValueResult lhs_bool = EmitNotZero(out, lhs_value);
+
+    std::string result_alloc = NextAllocName("sc");
+    out << "  " << result_alloc << " = alloc i32\n";
+    RegisterValueType(result_alloc, ValueType::Int);
+
+    std::string end_label = NextBlockLabel("sc_end");
+    if (op == BinaryOp::And) {
+      std::string rhs_label = NextBlockLabel("sc_and_rhs");
+      std::string false_label = NextBlockLabel("sc_and_false");
+
+      EmitBranch(out, lhs_bool.name, rhs_label, false_label);
+
+      EmitLabel(out, rhs_label);
+      ValueResult rhs_value = right->DumpKoopaValue(out);
+      ValueResult rhs_bool = EmitNotZero(out, rhs_value);
+      out << "  store " << rhs_bool.name << ", " << result_alloc << "\n";
+      if (!IsBlockTerminated()) {
+        EmitJump(out, end_label);
+      }
+
+      EmitLabel(out, false_label);
+      out << "  store 0, " << result_alloc << "\n";
+      if (!IsBlockTerminated()) {
+        EmitJump(out, end_label);
+      }
+    } else {
+      std::string true_label = NextBlockLabel("sc_or_true");
+      std::string rhs_label = NextBlockLabel("sc_or_rhs");
+
+      EmitBranch(out, lhs_bool.name, true_label, rhs_label);
+
+      EmitLabel(out, true_label);
+      out << "  store 1, " << result_alloc << "\n";
+      if (!IsBlockTerminated()) {
+        EmitJump(out, end_label);
+      }
+
+      EmitLabel(out, rhs_label);
+      ValueResult rhs_value = right->DumpKoopaValue(out);
+      ValueResult rhs_bool = EmitNotZero(out, rhs_value);
+      out << "  store " << rhs_bool.name << ", " << result_alloc << "\n";
+      if (!IsBlockTerminated()) {
+        EmitJump(out, end_label);
+      }
+    }
+
+    EmitLabel(out, end_label);
+    return EmitLoad(out, result_alloc, ValueType::Int);
+  }
+
   ValueResult lhs_value = left->DumpKoopaValue(out);
   ValueResult rhs_value = right->DumpKoopaValue(out);
   bool has_float = lhs_value.type == ValueType::Float || rhs_value.type == ValueType::Float;
@@ -365,20 +488,9 @@ ValueResult BinaryExpAST::DumpKoopaValue(std::ostream &out) const {
       return EmitBinary(out, "eq", lhs_value.name, rhs_value.name, ValueType::Int);
     case BinaryOp::Ne:
       return EmitBinary(out, "ne", lhs_value.name, rhs_value.name, ValueType::Int);
-    case BinaryOp::And: {
-      // 逻辑与: 先归一化为 0/1, 再按位与并归一化
-      ValueResult lhs_bool = EmitNotZero(out, lhs_value);
-      ValueResult rhs_bool = EmitNotZero(out, rhs_value);
-      ValueResult and_value = EmitBinary(out, "and", lhs_bool.name, rhs_bool.name, ValueType::Int);
-      return EmitNotZero(out, and_value);
-    }
-    case BinaryOp::Or: {
-      // 逻辑或: 先归一化为 0/1, 再按位或并归一化
-      ValueResult lhs_bool = EmitNotZero(out, lhs_value);
-      ValueResult rhs_bool = EmitNotZero(out, rhs_value);
-      ValueResult or_value = EmitBinary(out, "or", lhs_bool.name, rhs_bool.name, ValueType::Int);
-      return EmitNotZero(out, or_value);
-    }
+    case BinaryOp::And:
+    case BinaryOp::Or:
+      break;
   }
   assert(false);
   return lhs_value;

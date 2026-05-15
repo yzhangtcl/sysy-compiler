@@ -50,6 +50,8 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 "float"         { return FLOAT; }
 "const"         { return CONST; }
 "return"        { return RETURN; }
+"if"            { return IF; }
+"else"          { return ELSE; }
 "<="            { return LE; }
 ">="            { return GE; }
 "=="            { return EQ; }

@@ -23,6 +23,10 @@ class AsmGenerator {
   void VisitValue(const koopa_raw_value_t &value, std::ostream &out);
   // 处理 return 指令
   void VisitReturn(const koopa_raw_return_t &ret, std::ostream &out);
+  // 处理 branch 指令
+  void VisitBranch(const koopa_raw_branch_t &branch, std::ostream &out);
+  // 处理 jump 指令
+  void VisitJump(const koopa_raw_jump_t &jump, std::ostream &out);
   // 处理二元指令
   void VisitBinary(const koopa_raw_binary_t &binary, const koopa_raw_value_t &value,
                    std::ostream &out);
@@ -65,8 +69,14 @@ class AsmGenerator {
   void EmitStoreToOffset(const std::string &reg, int offset, std::ostream &out);
   void EmitLoadFromOffsetFloat(const std::string &reg, int offset, std::ostream &out);
   void EmitStoreToOffsetFloat(const std::string &reg, int offset, std::ostream &out);
+  // 生成并输出基本块标签
+  std::string FormatBasicBlockLabel(const koopa_raw_basic_block_t &bb) const;
+  void EmitBasicBlockLabel(const koopa_raw_basic_block_t &bb, std::ostream &out);
 
   std::unordered_map<koopa_raw_value_t, int> value_offsets_;
+  std::unordered_map<koopa_raw_basic_block_t, std::string> bb_labels_;
+  koopa_raw_basic_block_t entry_bb_ = nullptr;
+  std::string current_function_name_;
   int stack_size_ = 0;
   ValueType current_return_type_ = ValueType::Int;
 };

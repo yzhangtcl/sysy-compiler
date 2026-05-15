@@ -33,12 +33,13 @@ void AsmGenerator::VisitSlice(const koopa_raw_slice_t &slice, std::ostream &out)
 void AsmGenerator::VisitFunction(const koopa_raw_function_t &func, std::ostream &out) {
   // 预处理函数并生成函数级汇编骨架
   // 先输出函数标签再遍历基本块
-  PrepareFunction(func);
   const char *raw_name = func->name ? func->name : "@main";
   std::string func_name = raw_name;
   if (!func_name.empty() && func_name[0] == '@') {
     func_name.erase(0, 1);
   }
+  current_function_name_ = func_name;
+  PrepareFunction(func);
   current_return_type_ = LookupFunctionReturnType(func_name);
   EmitFunctionLabel(func, out);
   if (stack_size_ > 0) {
@@ -50,6 +51,7 @@ void AsmGenerator::VisitFunction(const koopa_raw_function_t &func, std::ostream 
 void AsmGenerator::VisitBasicBlock(const koopa_raw_basic_block_t &bb, std::ostream &out) {
   // 遍历基本块中的指令
   // 基本块中仅包含指令列表
+  EmitBasicBlockLabel(bb, out);
   VisitSlice(bb->insts, out);
 }
 
@@ -60,6 +62,12 @@ void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out)
   switch (kind.tag) {
     case KOOPA_RVT_RETURN:
       VisitReturn(kind.data.ret, out);
+      break;
+    case KOOPA_RVT_BRANCH:
+      VisitBranch(kind.data.branch, out);
+      break;
+    case KOOPA_RVT_JUMP:
+      VisitJump(kind.data.jump, out);
       break;
     case KOOPA_RVT_ALLOC:
       VisitAlloc(value);
@@ -110,6 +118,23 @@ void AsmGenerator::VisitReturn(const koopa_raw_return_t &ret, std::ostream &out)
   }
   // 函数返回
   out << "  ret\n";
+}
+
+void AsmGenerator::VisitBranch(const koopa_raw_branch_t &branch, std::ostream &out) {
+  // 条件分支: cond != 0 时跳转到真分支, 否则跳转到假分支
+  LoadValue(branch.cond, "t0", out);
+  auto true_it = bb_labels_.find(branch.true_bb);
+  auto false_it = bb_labels_.find(branch.false_bb);
+  assert(true_it != bb_labels_.end() && false_it != bb_labels_.end());
+  out << "  bnez t0, " << true_it->second << "\n";
+  out << "  j " << false_it->second << "\n";
+}
+
+void AsmGenerator::VisitJump(const koopa_raw_jump_t &jump, std::ostream &out) {
+  // 无条件跳转
+  auto target_it = bb_labels_.find(jump.target);
+  assert(target_it != bb_labels_.end());
+  out << "  j " << target_it->second << "\n";
 }
 
 void AsmGenerator::VisitAlloc(const koopa_raw_value_t &value) {
@@ -370,10 +395,16 @@ void AsmGenerator::EmitFunctionLabel(const koopa_raw_function_t &func, std::ostr
 void AsmGenerator::PrepareFunction(const koopa_raw_function_t &func) {
   // 扫描函数内指令, 为需要落栈的值分配栈偏移
   value_offsets_.clear();
+  bb_labels_.clear();
+  entry_bb_ = nullptr;
   stack_size_ = 0;
   auto bbs = func->bbs;
   for (size_t i = 0; i < bbs.len; ++i) {
     auto bb = reinterpret_cast<koopa_raw_basic_block_t>(bbs.buffer[i]);
+    if (i == 0) {
+      entry_bb_ = bb;
+    }
+    bb_labels_[bb] = FormatBasicBlockLabel(bb);
     auto insts = bb->insts;
     for (size_t j = 0; j < insts.len; ++j) {
       auto value = reinterpret_cast<koopa_raw_value_t>(insts.buffer[j]);
@@ -525,4 +556,26 @@ void AsmGenerator::EmitStoreToOffsetFloat(const std::string &reg, int offset,
     out << "  add t2, sp, t2\n";
     out << "  fsw " << reg << ", 0(t2)\n";
   }
+}
+
+std::string AsmGenerator::FormatBasicBlockLabel(const koopa_raw_basic_block_t &bb) const {
+  // 基本块名去掉 % 前缀, 并加上函数前缀确保唯一
+  const char *raw_name = bb->name ? bb->name : "%bb";
+  std::string name = raw_name;
+  if (!name.empty() && name[0] == '%') {
+    name.erase(0, 1);
+  }
+  if (current_function_name_.empty()) {
+    return name;
+  }
+  return current_function_name_ + "_" + name;
+}
+
+void AsmGenerator::EmitBasicBlockLabel(const koopa_raw_basic_block_t &bb, std::ostream &out) {
+  // 输出基本块标签
+  auto it = bb_labels_.find(bb);
+  if (it == bb_labels_.end()) {
+    return;
+  }
+  out << it->second << ":\n";
 }

@@ -78,3 +78,11 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
 - 前端语法扩展: 增加语句块作为 Stmt 的产生式, 支持空语句与表达式语句。
 - AST 扩展: 新增表达式语句节点, 确保仅有副作用的表达式被正确生成 IR。
 - 语义分析: 作用域随 Block 进入/退出, 同名标识符在内层作用域覆盖外层定义。
+
+## lv6-if
+
+为支持 if/else 与短路求值, 本阶段做了如下改动:
+
+- 前端语法扩展: 增加 if/else 语句并通过 matched/open 拆分解决悬挂 else。
+- AST 与 IR 生成: 新增 if 语句节点, 生成 br/jump 与基本块标签; 逻辑与/或改为短路求值。
+- 汇编生成: 新增 branch/jump 指令翻译, 输出基本块标签并使用 bnez/j 完成控制流跳转。

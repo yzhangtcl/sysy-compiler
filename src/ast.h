@@ -101,6 +101,19 @@ class ExprStmtAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
+// if 语句: 支持可选 else 分支.
+class IfStmtAST : public BaseAST {
+ public:
+  // 条件表达式
+  std::unique_ptr<BaseAST> cond;
+  // if 分支语句
+  std::unique_ptr<BaseAST> then_stmt;
+  // 可选 else 分支语句
+  std::unique_ptr<BaseAST> else_stmt;
+
+  void DumpKoopa(std::ostream &out) const override;
+};
+
 // 函数定义: 定义函数名、返回类型与函数体.
 class FuncDefAST : public BaseAST {
  public:
