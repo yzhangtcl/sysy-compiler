@@ -13,6 +13,10 @@ enum class ValueType { Int, Float, Void };
 struct ValueResult {
   std::string name;
   ValueType type = ValueType::Int;
+  // 标记是否为数组指针 (需要在函数调用时衰减为元素指针)
+  bool is_array_ptr = false;
+  // 数组指针的剩余维度 (如 arr[i] from int[2][3][4] 剩余 {3, 4})
+  std::vector<int> remaining_dims;
 };
 
 // 常量表达式求值结果.
@@ -84,9 +88,10 @@ class ReturnStmtAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// 赋值语句.
+// 赋值语句 (支持数组元素赋值: arr[i] = value)
 class AssignStmtAST : public BaseAST {
  public:
+  // 左值: LValAST (可以是标量或数组元素访问)
   std::unique_ptr<BaseAST> lval;
   std::unique_ptr<BaseAST> value;
 
@@ -153,13 +158,17 @@ class FuncDefAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// 函数形式参数: 类型 + 标识符.
+// 函数形式参数: 类型 + 标识符, 支持数组参数 (如 int arr[], int arr[][3])
 class FuncFParamAST : public BaseAST {
  public:
   // 参数类型, 当前支持 int / float
   ValueType value_type = ValueType::Int;
   // 参数名
   std::string ident;
+  // 是否为数组参数 (第一维为空, 如 int arr[])
+  bool is_array = false;
+  // 数组后续维度表达式列表 (如 int arr[][3][4] 中的 {expr_3, expr_4})
+  std::vector<std::unique_ptr<BaseAST>> dim_exprs;
 
   void DumpKoopa(std::ostream &out) const override;
 };
@@ -192,10 +201,12 @@ class PrimaryExpAST : public ExprAST {
   ConstValue EvalConst() const override;
 };
 
-// 左值表达式: 标识符
+// 左值表达式: 标识符, 可选带数组下标访问 arr[i][j]
 class LValAST : public ExprAST {
  public:
   std::string ident;
+  // 数组下标列表, 为空时表示标量变量
+  std::vector<std::unique_ptr<BaseAST>> indices;
 
   ValueResult DumpKoopaValue(std::ostream &out) const override;
   ConstValue EvalConst() const override;
@@ -242,11 +253,23 @@ class BinaryExpAST : public ExprAST {
   ConstValue EvalConst() const override;
 };
 
-// 常量定义
+// 初始化列表: {item1, item2, ...}, 用于数组初始化
+class InitValListAST : public BaseAST {
+ public:
+  // 列表元素, 可以是表达式或嵌套的初始化列表
+  std::vector<std::unique_ptr<BaseAST>> items;
+
+  void DumpKoopa(std::ostream &out) const override;
+};
+
+// 常量定义 (支持数组: const int arr[3] = {1,2,3})
 class ConstDefAST : public BaseAST {
  public:
   std::string ident;
   ValueType value_type = ValueType::Int;
+  // 数组维度表达式列表 (如 [2][3] 存储为 {expr_2, expr_3}), 为空表示标量
+  std::vector<std::unique_ptr<BaseAST>> dim_exprs;
+  // 初始值: 可以是 ExprAST (标量) 或 InitValListAST (数组)
   std::unique_ptr<BaseAST> init;
 
   void DumpKoopa(std::ostream &out) const override;
@@ -260,11 +283,14 @@ class ConstDeclAST : public BaseAST {
   void DumpKoopa(std::ostream &out) const override;
 };
 
-// 变量定义
+// 变量定义 (支持数组: int arr[3] = {1,2,3})
 class VarDefAST : public BaseAST {
  public:
   std::string ident;
   ValueType value_type = ValueType::Int;
+  // 数组维度表达式列表 (如 [2][3] 存储为 {expr_2, expr_3}), 为空表示标量
+  std::vector<std::unique_ptr<BaseAST>> dim_exprs;
+  // 初始值: 可以是 ExprAST (标量) 或 InitValListAST (数组), 为空表示未初始化
   std::unique_ptr<BaseAST> init;
 
   void DumpKoopa(std::ostream &out) const override;

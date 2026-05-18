@@ -150,4 +150,40 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
    ./test_2.sh test2
    ```
 
-   
+## lv9-array 数组支持
+
+为支持数组定义、访问与函数参数传递, 本阶段做了如下改动:
+
+### 前端语法扩展
+- `ConstDef` 和 `VarDef` 增加可选的数组维度定义 `{"[" ConstExp "]"}`, 支持多维数组声明.
+- `ConstInitVal` 和 `InitVal` 扩展为支持嵌套花括号初始化列表 `{InitVal, InitVal, ...}`.
+- `LVal` 增加可选的数组下标 `{"[" Exp "]"]}`, 支持 `arr[i]`、`arr[i][j]` 等多维访问.
+- `FuncFParam` 扩展为支持数组参数 `BType IDENT "[" "]" {"[" ConstExp "]"}`, 如 `int arr[]`、`int arr[][3]`.
+- 新增 `ConstExpList`、`ExpList`、`InitValList`、`ConstInitValList` 辅助产生式.
+
+### AST 扩展
+- 新增 `InitValListAST` 表示初始化列表, 可嵌套.
+- `ConstDefAST` 和 `VarDefAST` 增加 `dim_exprs` 字段存储维度表达式, 延迟到 IR 生成时求值 (避免符号表未建立时求值失败).
+- `LValAST` 增加 `indices` 字段存储数组下标表达式列表.
+- `FuncFParamAST` 增加 `is_array` 标记和 `dim_exprs` 存储数组参数维度.
+- `ValueResult` 增加 `is_array_ptr` 标记和 `remaining_dims` 字段, 用于函数调用时的数组指针衰减.
+
+### 语义分析与 IR 生成
+- 数组类型: 使用 Koopa IR 数组类型 `[i32, N]`、`[[i32, M], N]` 等.
+- 数组分配: 局部数组使用 `alloc [T, N]`, 全局数组使用 `global alloc [T, N], {agg}` 或 `zeroinit`.
+- 数组访问: 使用 `getelemptr` 指令进行多级索引, 通过 `EmitArrayElemPtr` 辅助函数生成多级指针计算链.
+- 初始化列表展平: `FlattenArrayInit` 递归处理嵌套初始化列表, 按 C 语言规则对齐维度边界并补零.
+- 全局数组初始化: 使用 Koopa IR 聚合常量 `{v1, v2, ...}` 表示.
+- 局部数组初始化: 逐元素使用 `getelemptr` + `store` 初始化.
+- 函数数组参数: 使用指针类型 `*i32`、`*[i32, M]` 等, 第一维省略.
+- 数组参数访问: 使用 `getptr` 处理第一维, `getelemptr` 处理后续维度.
+- 数组指针衰减: 当子数组指针 (如 `*[i32, M]`) 作为函数实参传递给期望基类型指针 (`*i32`) 的形参时, 自动插入 `getelemptr ptr, 0` 完成类型转换.
+- 函数参数名唯一化: 使用 `@p0`、`@p1` 等格式避免与全局变量名冲突.
+- 函数参数类型注册: `RegisterFunctionParamTypes` 记录每个函数的参数类型信息, 用于调用时的类型匹配与衰减决策.
+
+### 汇编生成 (RISC-V)
+- `getelemptr` 指令: 计算 `base + index * sizeof(element)`, 生成 `addi`/`mul`/`add` 指令序列.
+- `getptr` 指令: 与 `getelemptr` 类似, 计算指针偏移.
+- 全局聚合初始化: 递归输出 `.word` 和 `.zero` 指令.
+- 类型大小计算: `CalcTypeSize` 递归计算数组/指针/整数类型的字节大小.
+- 栈帧分配: `alloc` 指令按实际类型大小分配栈空间 (非固定 4 字节).

@@ -1,0 +1,30 @@
+decl @getint(): i32
+decl @getch(): i32
+decl @getfloat(): i32
+decl @getarray(*i32): i32
+decl @putint(i32)
+decl @putch(i32)
+decl @putfloat(i32)
+decl @putarray(i32, *i32)
+decl @starttime()
+decl @stoptime()
+fun @main(): i32 {
+%entry:
+  @arr_0 = alloc [[i32, 3], 2]
+  %t0 = getelemptr @arr_0, 0
+  store 1, %t0
+  %t1 = getelemptr @arr_0, 1
+  store 2, %t1
+  %t2 = getelemptr @arr_0, 2
+  store 3, %t2
+  %t3 = getelemptr @arr_0, 3
+  store 4, %t3
+  %t4 = getelemptr @arr_0, 4
+  store 5, %t4
+  %t5 = getelemptr @arr_0, 5
+  store 6, %t5
+  %t6 = getelemptr @arr_0, 1
+  %t7 = getelemptr %t6, 2
+  %t8 = load %t7
+  ret %t8
+}

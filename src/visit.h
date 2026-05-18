@@ -42,6 +42,16 @@ class AsmGenerator {
                  std::ostream &out);
   // 处理 store 指令
   void VisitStore(const koopa_raw_store_t &store, std::ostream &out);
+  // 处理 getelemptr 指令 (数组元素指针计算)
+  void VisitGetElemPtr(const koopa_raw_get_elem_ptr_t &gep, const koopa_raw_value_t &value,
+                       std::ostream &out);
+  // 处理 getptr 指令 (指针运算)
+  void VisitGetPtr(const koopa_raw_get_ptr_t &gp, const koopa_raw_value_t &value,
+                   std::ostream &out);
+  // 递归输出全局变量初始化数据
+  void EmitGlobalInit(const koopa_raw_value_t &init, std::ostream &out);
+  // 计算 Koopa 类型的字节大小
+  int CalcTypeSize(const koopa_raw_type_t &type) const;
   // 读取整数常量
   int32_t VisitInteger(const koopa_raw_integer_t &integer);
   // 输出函数的汇编标签
@@ -69,11 +79,17 @@ class AsmGenerator {
   bool IsUnitType(const koopa_raw_type_t &type) const;
   // 生成 sp 调整指令
   void EmitAddiSp(int offset, std::ostream &out);
-  // 访问栈内偏移的内存
+  // 访问栈内偏移的内存 (32-bit word)
   void EmitLoadFromOffset(const std::string &reg, int offset, std::ostream &out);
   void EmitStoreToOffset(const std::string &reg, int offset, std::ostream &out);
+  // 访问栈内偏移的内存 (64-bit pointer, RV64)
+  void EmitLoadFromOffsetPtr(const std::string &reg, int offset, std::ostream &out);
+  void EmitStoreToOffsetPtr(const std::string &reg, int offset, std::ostream &out);
+  // 访问栈内偏移的浮点内存
   void EmitLoadFromOffsetFloat(const std::string &reg, int offset, std::ostream &out);
   void EmitStoreToOffsetFloat(const std::string &reg, int offset, std::ostream &out);
+  // 判断 Koopa 类型是否为指针类型
+  bool IsPointerType(const koopa_raw_type_t &type) const;
   // 生成并输出基本块标签
   std::string FormatBasicBlockLabel(const koopa_raw_basic_block_t &bb) const;
   void EmitBasicBlockLabel(const koopa_raw_basic_block_t &bb, std::ostream &out);

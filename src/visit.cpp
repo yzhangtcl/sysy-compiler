@@ -111,6 +111,12 @@ void AsmGenerator::VisitValue(const koopa_raw_value_t &value, std::ostream &out)
     case KOOPA_RVT_INTEGER:
       (void)VisitInteger(kind.data.integer);
       break;
+    case KOOPA_RVT_GET_ELEM_PTR:
+      VisitGetElemPtr(kind.data.get_elem_ptr, value, out);
+      break;
+    case KOOPA_RVT_GET_PTR:
+      VisitGetPtr(kind.data.get_ptr, value, out);
+      break;
     default:
       assert(false);
   }
@@ -214,6 +220,7 @@ void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out)
   // 计算待写入的值, 支持全局变量目标
   ValueType dest_type = GetValueType(store.dest);
   ValueType value_type = GetValueType(store.value);
+
   if (dest_type == ValueType::Float) {
     if (value_type == ValueType::Float) {
       LoadFloatValue(store.value, "ft0", out);
@@ -242,6 +249,7 @@ void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out)
   } else {
     LoadValue(store.value, "t0", out);
   }
+
   if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
     auto it = value_offsets_.find(store.dest);
     assert(it != value_offsets_.end());
@@ -467,6 +475,44 @@ void AsmGenerator::VisitCall(const koopa_raw_call_t &call, const koopa_raw_value
   }
 }
 
+void AsmGenerator::VisitGetElemPtr(const koopa_raw_get_elem_ptr_t &gep,
+                                   const koopa_raw_value_t &value, std::ostream &out) {
+  // getelemptr src, index: 计算 src + index * sizeof(element_type)
+  // src 类型为 *[T, N], 结果类型为 *T
+  // 加载基地址
+  LoadAddress(gep.src, "t0", out);
+  // 加载索引
+  LoadValue(gep.index, "t1", out);
+  // 计算元素大小
+  int elem_size = CalcTypeSize(gep.src->ty->data.pointer.base->data.array.base);
+  // t1 = index * elem_size
+  out << "  li t2, " << elem_size << "\n";
+  out << "  mul t1, t1, t2\n";
+  // t0 = base + offset
+  out << "  add t0, t0, t1\n";
+  // 存储结果地址
+  StoreValue(value, "t0", out);
+}
+
+void AsmGenerator::VisitGetPtr(const koopa_raw_get_ptr_t &gp,
+                               const koopa_raw_value_t &value, std::ostream &out) {
+  // getptr src, index: 计算 src + index * sizeof(pointed_type)
+  // src 类型为 *T, 结果类型也为 *T
+  // 加载基地址
+  LoadAddress(gp.src, "t0", out);
+  // 加载索引
+  LoadValue(gp.index, "t1", out);
+  // 计算指向类型的大小
+  int elem_size = CalcTypeSize(gp.src->ty->data.pointer.base);
+  // t1 = index * elem_size
+  out << "  li t2, " << elem_size << "\n";
+  out << "  mul t1, t1, t2\n";
+  // t0 = base + offset
+  out << "  add t0, t0, t1\n";
+  // 存储结果地址
+  StoreValue(value, "t0", out);
+}
+
 void AsmGenerator::VisitGlobalAlloc(const koopa_raw_value_t &value, std::ostream &out) {
   // 处理全局内存分配: 输出 .data 段和符号定义
   if (!data_section_opened_) {
@@ -488,16 +534,44 @@ void AsmGenerator::VisitGlobalAlloc(const koopa_raw_value_t &value, std::ostream
   auto &kind = value->kind;
   if (kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
     auto init = kind.data.global_alloc.init;
-    if (init->kind.tag == KOOPA_RVT_ZERO_INIT) {
-      out << "  .zero 4\n";
-    } else if (init->kind.tag == KOOPA_RVT_INTEGER) {
-      int32_t val = init->kind.data.integer.value;
-      out << "  .word " << val << "\n";
-    } else {
-      // 未处理类型, 默认填 0
-      out << "  .zero 4\n";
-    }
+    EmitGlobalInit(init, out);
   }
+}
+
+void AsmGenerator::EmitGlobalInit(const koopa_raw_value_t &init, std::ostream &out) {
+  // 递归输出全局变量初始化数据
+  if (init->kind.tag == KOOPA_RVT_ZERO_INIT) {
+    // 零初始化: 计算类型大小并输出对应字节数
+    int size = CalcTypeSize(init->ty);
+    out << "  .zero " << size << "\n";
+  } else if (init->kind.tag == KOOPA_RVT_INTEGER) {
+    int32_t val = init->kind.data.integer.value;
+    out << "  .word " << val << "\n";
+  } else if (init->kind.tag == KOOPA_RVT_AGGREGATE) {
+    // 聚合常量: 递归输出每个元素
+    auto &agg = init->kind.data.aggregate;
+    for (size_t i = 0; i < agg.elems.len; ++i) {
+      auto elem = reinterpret_cast<koopa_raw_value_t>(agg.elems.buffer[i]);
+      EmitGlobalInit(elem, out);
+    }
+  } else {
+    // 未知类型, 默认填 0
+    out << "  .zero 4\n";
+  }
+}
+
+int AsmGenerator::CalcTypeSize(const koopa_raw_type_t &type) const {
+  // 计算 Koopa 类型的字节大小
+  if (type->tag == KOOPA_RTT_INT32) {
+    return 4;
+  } else if (type->tag == KOOPA_RTT_ARRAY) {
+    return type->data.array.len * CalcTypeSize(type->data.array.base);
+  } else if (type->tag == KOOPA_RTT_POINTER) {
+    return 4;  // 指针大小为 4 字节 (32 位模式)
+  } else if (type->tag == KOOPA_RTT_UNIT) {
+    return 0;
+  }
+  return 4;  // 默认
 }
 
 void AsmGenerator::EmitFunctionLabel(const koopa_raw_function_t &func, std::ostream &out) {
@@ -552,7 +626,14 @@ void AsmGenerator::PrepareFunction(const koopa_raw_function_t &func) {
       // 为有返回值的指令分配栈槽
       if (!IsUnitType(value->ty)) {
         value_offsets_[value] = local_var_size_;
-        local_var_size_ += 4;
+        int size;
+        if (value->kind.tag == KOOPA_RVT_ALLOC) {
+          // alloc 指令: 为指向的类型分配空间 (如 alloc [i32, 5] 需要 20 字节)
+          size = CalcTypeSize(value->ty->data.pointer.base);
+        } else {
+          size = CalcTypeSize(value->ty);
+        }
+        local_var_size_ += size;
       }
     }
   }
@@ -659,16 +740,23 @@ void AsmGenerator::LoadAddress(const koopa_raw_value_t &value, const std::string
     out << "  la " << reg << ", " << name << "\n";
     return;
   }
-  // 局部变量: sp + offset
+  // alloc 指令: 返回 sp + offset (alloc 本身就在栈上分配空间)
+  if (value->kind.tag == KOOPA_RVT_ALLOC) {
+    auto it = value_offsets_.find(value);
+    assert(it != value_offsets_.end());
+    int offset = it->second;
+    if (offset >= -2048 && offset <= 2047) {
+      out << "  addi " << reg << ", sp, " << offset << "\n";
+    } else {
+      out << "  li " << reg << ", " << offset << "\n";
+      out << "  add " << reg << ", sp, " << reg << "\n";
+    }
+    return;
+  }
+  // getelemptr / getptr / 其他: 结果地址存储在栈槽中, 需要加载
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
-  int offset = it->second;
-  if (offset >= -2048 && offset <= 2047) {
-    out << "  addi " << reg << ", sp, " << offset << "\n";
-  } else {
-    out << "  li " << reg << ", " << offset << "\n";
-    out << "  add " << reg << ", sp, " << reg << "\n";
-  }
+  EmitLoadFromOffset(reg, it->second, out);
 }
 
 void AsmGenerator::StoreValue(const koopa_raw_value_t &value, const std::string &reg,
@@ -676,7 +764,11 @@ void AsmGenerator::StoreValue(const koopa_raw_value_t &value, const std::string 
   // 将寄存器中的结果写回值对应的栈槽
   auto it = value_offsets_.find(value);
   assert(it != value_offsets_.end());
-  EmitStoreToOffset(reg, it->second, out);
+  if (IsPointerType(value->ty)) {
+    EmitStoreToOffsetPtr(reg, it->second, out);
+  } else {
+    EmitStoreToOffset(reg, it->second, out);
+  }
 }
 
 void AsmGenerator::StoreFloatValue(const koopa_raw_value_t &value, const std::string &reg,
@@ -689,6 +781,10 @@ void AsmGenerator::StoreFloatValue(const koopa_raw_value_t &value, const std::st
 
 bool AsmGenerator::IsUnitType(const koopa_raw_type_t &type) const {
   return type->tag == KOOPA_RTT_UNIT;
+}
+
+bool AsmGenerator::IsPointerType(const koopa_raw_type_t &type) const {
+  return type->tag == KOOPA_RTT_POINTER;
 }
 
 void AsmGenerator::EmitAddiSp(int offset, std::ostream &out) {
@@ -715,7 +811,7 @@ void AsmGenerator::EmitLoadFromOffset(const std::string &reg, int offset,
 
 void AsmGenerator::EmitStoreToOffset(const std::string &reg, int offset,
                                      std::ostream &out) {
-  // 向 sp + offset 写入数据, 处理 12 位偏移限制
+  // 向 sp + offset 写入数据 (32-bit word), 处理 12 位偏移限制
   if (offset >= -2048 && offset <= 2047) {
     out << "  sw " << reg << ", " << offset << "(sp)\n";
   } else {
@@ -723,6 +819,18 @@ void AsmGenerator::EmitStoreToOffset(const std::string &reg, int offset,
     out << "  add t2, sp, t2\n";
     out << "  sw " << reg << ", 0(t2)\n";
   }
+}
+
+void AsmGenerator::EmitStoreToOffsetPtr(const std::string &reg, int offset,
+                                        std::ostream &out) {
+  // 向 sp + offset 写入指针值 (RV32 使用 sw, RV64 需要 sd, 此处统一用 sw)
+  EmitStoreToOffset(reg, offset, out);
+}
+
+void AsmGenerator::EmitLoadFromOffsetPtr(const std::string &reg, int offset,
+                                         std::ostream &out) {
+  // 从 sp + offset 加载指针值 (RV32 使用 lw, RV64 需要 ld, 此处统一用 lw)
+  EmitLoadFromOffset(reg, offset, out);
 }
 
 void AsmGenerator::EmitLoadFromOffsetFloat(const std::string &reg, int offset,

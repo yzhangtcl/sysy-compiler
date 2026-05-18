@@ -52,8 +52,9 @@ using namespace std;
 // 非终结符的类型定义
 %type <ast_val> FuncDef Block BlockItem Decl ConstDecl VarDecl ConstDef VarDef
 %type <ast_val> Stmt MatchedStmt OpenStmt Exp PrimaryExp UnaryExp MulExp AddExp RelExp EqExp LAndExp LOrExp
-%type <ast_val> InitVal LVal FuncFParam
-%type <ast_list> BlockItems ConstDefList VarDefList FuncFParams FuncRParams
+%type <ast_val> InitVal ConstInitVal LVal FuncFParam
+%type <ast_list> BlockItems ConstDefList VarDefList FuncFParams FuncRParams InitValList ConstInitValList
+%type <ast_list> ConstExpList ExpList
 %type <int_val> Number
 %type <type_val> BType
 
@@ -146,12 +147,34 @@ FuncFParams
   }
   ;
 
-// FuncFParam ::= BType IDENT;
+// FuncFParam ::= BType IDENT ["[" "]" {"[" ConstExp "]"}];
+// 支持数组参数: int a, int a[], int a[][3], int a[][3][4]
 FuncFParam
   : BType IDENT {
     auto ast = new FuncFParamAST();
     ast->value_type = $1;
     ast->ident = *std::unique_ptr<std::string>($2);
+    ast->is_array = false;
+    $$ = ast;
+  }
+  | BType IDENT '[' ']' {
+    // 一维数组参数: int arr[]
+    auto ast = new FuncFParamAST();
+    ast->value_type = $1;
+    ast->ident = *std::unique_ptr<std::string>($2);
+    ast->is_array = true;
+    $$ = ast;
+  }
+  | BType IDENT '[' ']' ConstExpList {
+    // 多维数组参数: int arr[][3][4]
+    auto ast = new FuncFParamAST();
+    ast->value_type = $1;
+    ast->ident = *std::unique_ptr<std::string>($2);
+    ast->is_array = true;
+    for (auto *dim_expr : *$5) {
+      ast->dim_exprs.emplace_back(dim_expr);
+    }
+    delete $5;
     $$ = ast;
   }
   ;
@@ -162,6 +185,58 @@ BType
   }
   | FLOAT {
     $$ = ValueType::Float;
+  }
+  ;
+
+// ConstExpList: 数组维度列表, 如 [2][3] 中的 2, 3
+ConstExpList
+  : '[' Exp ']' {
+    auto dims = new std::vector<BaseAST *>();
+    dims->push_back($2);
+    $$ = dims;
+  }
+  | ConstExpList '[' Exp ']' {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+// ExpList: 数组下标列表, 如 [i][j] 中的 i, j
+ExpList
+  : '[' Exp ']' {
+    auto indices = new std::vector<BaseAST *>();
+    indices->push_back($2);
+    $$ = indices;
+  }
+  | ExpList '[' Exp ']' {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+// InitValList: 初始化列表元素
+InitValList
+  : InitVal {
+    auto items = new std::vector<BaseAST *>();
+    items->push_back($1);
+    $$ = items;
+  }
+  | InitValList ',' InitVal {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+// ConstInitValList: 常量初始化列表元素
+ConstInitValList
+  : ConstInitVal {
+    auto items = new std::vector<BaseAST *>();
+    items->push_back($1);
+    $$ = items;
+  }
+  | ConstInitValList ',' ConstInitVal {
+    $1->push_back($3);
+    $$ = $1;
   }
   ;
 
@@ -230,11 +305,43 @@ ConstDefList
   }
   ;
 
+// ConstDef ::= IDENT {"[" ConstExp "]"} "=" ConstInitVal;
+// 支持数组定义: const int a = 1; const int arr[3] = {1,2,3}; const int arr[2][3] = {{1,2,3},{4,5,6}}
 ConstDef
-  : IDENT '=' Exp {
+  : IDENT '=' ConstInitVal {
     auto ast = new ConstDefAST();
     ast->ident = *std::unique_ptr<std::string>($1);
     ast->init = std::unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  | IDENT ConstExpList '=' ConstInitVal {
+    auto ast = new ConstDefAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    for (auto *dim_expr : *$2) {
+      ast->dim_exprs.emplace_back(dim_expr);
+    }
+    delete $2;
+    ast->init = std::unique_ptr<BaseAST>($4);
+    $$ = ast;
+  }
+  ;
+
+// ConstInitVal ::= ConstExp | "{" [ConstInitVal {"," ConstInitVal}] "}";
+ConstInitVal
+  : Exp {
+    $$ = $1;
+  }
+  | '{' '}' {
+    // 空初始化列表 {}
+    auto ast = new InitValListAST();
+    $$ = ast;
+  }
+  | '{' ConstInitValList '}' {
+    auto ast = new InitValListAST();
+    for (auto *item : *$2) {
+      ast->items.emplace_back(item);
+    }
+    delete $2;
     $$ = ast;
   }
   ;
@@ -265,6 +372,8 @@ VarDefList
   }
   ;
 
+// VarDef ::= IDENT {"[" ConstExp "]"} | IDENT {"[" ConstExp "]"} "=" InitVal;
+// 支持数组定义: int a; int a = 1; int arr[3]; int arr[3] = {1,2,3}; int arr[2][3] = {{1,2,3},{4,5,6}}
 VarDef
   : IDENT {
     auto ast = new VarDefAST();
@@ -277,11 +386,46 @@ VarDef
     ast->init = std::unique_ptr<BaseAST>($3);
     $$ = ast;
   }
+  | IDENT ConstExpList {
+    // 数组定义 (无初始化): int arr[3], int arr[2][3]
+    auto ast = new VarDefAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    for (auto *dim_expr : *$2) {
+      ast->dim_exprs.emplace_back(dim_expr);
+    }
+    delete $2;
+    $$ = ast;
+  }
+  | IDENT ConstExpList '=' InitVal {
+    // 数组定义 (有初始化): int arr[3] = {1,2,3}
+    auto ast = new VarDefAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    for (auto *dim_expr : *$2) {
+      ast->dim_exprs.emplace_back(dim_expr);
+    }
+    delete $2;
+    ast->init = std::unique_ptr<BaseAST>($4);
+    $$ = ast;
+  }
   ;
 
+// InitVal ::= Exp | "{" [InitVal {"," InitVal}] "}";
 InitVal
   : Exp {
     $$ = $1;
+  }
+  | '{' '}' {
+    // 空初始化列表 {}
+    auto ast = new InitValListAST();
+    $$ = ast;
+  }
+  | '{' InitValList '}' {
+    auto ast = new InitValListAST();
+    for (auto *item : *$2) {
+      ast->items.emplace_back(item);
+    }
+    delete $2;
+    $$ = ast;
   }
   ;
 
@@ -405,10 +549,21 @@ PrimaryExp
   }
   ;
 
+// LVal ::= IDENT {"[" Exp "]"};
+// 支持数组访问: arr, arr[i], arr[i][j]
 LVal
   : IDENT {
     auto ast = new LValAST();
     ast->ident = *std::unique_ptr<std::string>($1);
+    $$ = ast;
+  }
+  | IDENT ExpList {
+    auto ast = new LValAST();
+    ast->ident = *std::unique_ptr<std::string>($1);
+    for (auto *index_expr : *$2) {
+      ast->indices.emplace_back(index_expr);
+    }
+    delete $2;
     $$ = ast;
   }
   ;
