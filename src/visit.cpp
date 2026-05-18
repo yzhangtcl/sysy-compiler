@@ -420,18 +420,32 @@ int32_t AsmGenerator::VisitInteger(const koopa_raw_integer_t &integer) {
 
 void AsmGenerator::VisitCall(const koopa_raw_call_t &call, const koopa_raw_value_t &value,
                              std::ostream &out) {
-  // 处理 call 指令: 将前 8 个参数放入 a0-a7, 超出部分放入栈帧
-  // 然后执行 call, 最后将返回值 (如果有) 写回栈
+  // 处理 call 指令: 将前 8 个参数按被调用函数的 ABI 放入正确寄存器
   const char *callee_name = call.callee->name ? (call.callee->name + 1) : "main";
+  std::string callee = callee_name;
   size_t arg_count = call.args.len;
 
   // 将参数放入寄存器或栈
   for (size_t i = 0; i < arg_count; ++i) {
     auto arg = reinterpret_cast<koopa_raw_value_t>(call.args.buffer[i]);
     if (i < 8) {
-      // 前 8 个参数: a0-a7
-      std::string reg = "a" + std::to_string(i);
-      LoadValue(arg, reg, out);
+      // 前 8 个参数
+      std::string ireg = "a" + std::to_string(i);
+      std::string freg = "fa" + std::to_string(i);
+
+      // putfloat 唯一参数必须走 fa0 (即使实参是 int, 也需 fcvt.s.w 转换)
+      if (callee == "putfloat") {
+        LoadFloatValue(arg, freg, out);
+      }
+      // putint 如果实参是 float, 需要 fcvt.w.s 转整数再放 a0
+      else if (callee == "putint" && GetValueType(arg) == ValueType::Float) {
+        LoadFloatValue(arg, "ft0", out);
+        out << "  fcvt.w.s " << ireg << ", ft0, rtz\n";
+      }
+      // 默认: 整型传参
+      else {
+        LoadValue(arg, ireg, out);
+      }
     } else {
       // 超出 8 个参数: 放入栈帧 (sp + (i - 8) * 4)
       LoadValue(arg, "t0", out);
@@ -443,10 +457,9 @@ void AsmGenerator::VisitCall(const koopa_raw_call_t &call, const koopa_raw_value
   // 执行 call 指令
   out << "  call " << callee_name << "\n";
 
-  // 将返回值 (如果有) 写回栈
+  // 将返回值 (如果有) 写回栈: getfloat 返回 IEEE 754 位模式到 fa0
   if (!IsUnitType(value->ty)) {
-    ValueType ret_type = GetValueType(value);
-    if (ret_type == ValueType::Float) {
+    if (callee == "getfloat") {
       StoreFloatValue(value, "fa0", out);
     } else {
       StoreValue(value, "a0", out);

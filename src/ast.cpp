@@ -35,12 +35,16 @@ struct LibFuncInfo {
 };
 
 // SysY 标准库函数列表
+// 注: getfloat/putfloat 在 Koopa IR 层面参数/返回值仍为 i32 (bit pattern),
+// 仅在 RISC-V 后端按浮点调用约定使用 fa0/fa0-fa7
 static const std::vector<LibFuncInfo> g_lib_funcs = {
   {"getint", "", "i32"},
   {"getch", "", "i32"},
+  {"getfloat", "", "i32"},
   {"getarray", "*i32", "i32"},
   {"putint", "i32", ""},
   {"putch", "i32", ""},
+  {"putfloat", "i32", ""},
   {"putarray", "i32, *i32", ""},
   {"starttime", "", ""},
   {"stoptime", "", ""},
@@ -75,8 +79,14 @@ void RegisterLibFuncs() {
       info.value_type = ValueType::Int;
     } else if (func.ret_type.empty()) {
       info.value_type = ValueType::Void;
+    } else if (func.ret_type == "float") {
+      info.value_type = ValueType::Float;
     } else {
       info.value_type = ValueType::Int;
+    }
+    // getfloat 返回 float, 显式标记
+    if (func.name == "getfloat") {
+      info.value_type = ValueType::Float;
     }
     info.alloc_name = "@" + func.name;
     global_scope[func.name] = info;

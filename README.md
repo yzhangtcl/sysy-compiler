@@ -130,3 +130,24 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
 - **函数调用 (call)**: 前 8 个参数依次放入 `a0`-`a7`, 超出部分存入 `sp + (i-8)*4`; 执行 `call` 指令后, 返回值从 `a0` (整型) 写入栈槽.
 - **全局变量**: 输出 `.data` 段, 使用 `.globl`/`.zero`/`.word` 定义全局符号; 在函数内通过 `la` + `lw`/`sw` 访问.
 - **库函数调用**: 与普通函数调用一致, 链接器负责解析外部符号.
+
+## lv8_w_floatIO floatIO-support
+
+添加了支持 `float` 输入输出的 SysY 库函数 `float getfloat()`  和 `void putfloat(float)`
+
+同时增加了测试 `./test_2.sh` 用来进行测试，使用方法如下：
+
+1. 编译 `sysy-runtime-lib`：
+
+   ```bash
+   cd ./sysy-runtime-lib
+   make CC="riscv64-linux-gnu-gcc"
+   ```
+
+2. 运行 `test_2.sh`
+
+   ```cpp
+   ./test_2.sh test2
+   ```
+
+   

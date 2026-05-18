@@ -2,6 +2,7 @@
   .globl main
 main:
   addi sp, sp, -64
+main_entry:
   li t0, 1067534254
   fmv.w.x ft0, t0
   fsw ft0, 4(sp)
