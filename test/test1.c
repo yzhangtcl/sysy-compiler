@@ -1,5 +1,5 @@
-int localEnergy(int a[20][20], int x, int y, int depth) {
-    return localEnergy(a, x, y, depth - 1) ;
+int localEnergy(int a[][20]) {
+    return localEnergy(a) ;
 }
 int main(){
     int d;

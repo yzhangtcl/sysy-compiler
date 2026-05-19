@@ -187,3 +187,33 @@ apt install -y gcc-riscv64-linux-gnu qemu-user
 - 全局聚合初始化: 递归输出 `.word` 和 `.zero` 指令.
 - 类型大小计算: `CalcTypeSize` 递归计算数组/指针/整数类型的字节大小.
 - 栈帧分配: `alloc` 指令按实际类型大小分配栈空间 (非固定 4 字节).
+
+
+## lv9_w_float 浮点数组的支持
+
+为修复浮点数组的正确处理, 本阶段做了如下改动:
+
+### 后端汇编生成修复 (visit.cpp)
+- **浮点 bit pattern 正确传递**: `LoadFloatValue` 中将 `fcvt.s.w` 改为 `fmv.w.x`, 确保 INTEGER 常量作为 IEEE 754 bit pattern 正确移入浮点寄存器 (而非被当作整数值转换).
+- **`VisitStore` 指针/浮点区分**: 增加对目标 alloc 是否持有指针类型的检查 — 数组参数的 alloc 持有 `*i32` 等指针类型, 应使用 `sw` 而非 `fsw`; 同时增加 `FUNC_ARG_REF` 分支, 标量浮点参数用 `fmv.w.x` 而非 `fcvt.s.w`.
+- **`VisitCall` 返回值修复**: 所有返回类型为 float 的函数 (不仅 `getfloat`) 都从 `fa0` 读取返回值, 而非仅限库函数.
+- **函数类型表恢复**: `VisitFunction` 在处理每个函数前调用 `RestoreValueTypeTable`, 解决多函数编译时前端生成的类型信息被后续函数覆盖的问题.
+
+### 前端 IR 生成修复 (ast.cpp)
+- **浮点数组初始化**: `VarDefAST::DumpKoopa` 和 `ConstDefAST::DumpKoopa` 中, 浮点数组逐元素初始化时将展平后的 bit pattern 包装为正确的 float IR 值 (`add 0, <bits>`), 避免后端误将裸整数做 `fcvt.s.w` 转换.
+- **函数类型表保存/恢复**: 新增 `SaveValueTypeTable` / `RestoreValueTypeTable` 机制, 每个函数生成完毕后保存其类型表, 后端按函数名恢复, 彻底解决类型信息在多函数场景下丢失的根本问题.
+
+### 测试脚本迁移至 riscv32 (test.sh / test_2.sh)
+- 汇编编译使用 `clang -target riscv32-unknown-linux-elf -march=rv32imf -mabi=ilp32f` (hard-float ABI).
+- 链接使用 `ld.lld -static`.
+- 运行使用 `qemu-riscv32`.
+
+### 运行时库编译 (sysy-runtime-lib)
+
+以 riscv32 + hard-float ABI 编译 `libsysy.a`:
+
+```bash
+cd ./sysy-runtime-lib
+make clean
+make NO_LIBC=1 ADD_CFLAGS="-target riscv32-unknown-linux-elf -march=rv32imf -mabi=ilp32f"
+```

@@ -35,7 +35,7 @@ int minInt(int a, int b) {
     return b;
 }
 
-float localEnergy(float a[20][20], int x, int y, int depth) {
+float localEnergy(float a[][20], int x, int y, int depth) {
     float v;
     float sum;
     int nx;
@@ -78,7 +78,7 @@ float localEnergy(float a[20][20], int x, int y, int depth) {
     return sum;
 }
 
-void printMap(float a[20][20]) {
+void printMap(float a[][20]) {
     int i;
     int j;
     int v;
