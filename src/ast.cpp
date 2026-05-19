@@ -435,6 +435,22 @@ void ResetValueTypeTable() {
   g_value_types.clear();
 }
 
+// 保存每个函数的类型表, 供后端使用
+static std::unordered_map<std::string, std::unordered_map<std::string, ValueType>> g_saved_type_tables;
+
+void SaveValueTypeTable(const std::string &func_name) {
+  g_saved_type_tables[func_name] = g_value_types;
+}
+
+void RestoreValueTypeTable(const std::string &func_name) {
+  auto it = g_saved_type_tables.find(func_name);
+  if (it != g_saved_type_tables.end()) {
+    g_value_types = it->second;
+  } else {
+    g_value_types.clear();
+  }
+}
+
 // 标记当前是否在全局作用域内
 static bool g_in_global = false;
 
@@ -770,6 +786,9 @@ void FuncDefAST::DumpKoopa(std::ostream &out) const {
   }
 
   ExitScope();  // 退出函数局部作用域
+
+  // 保存当前函数的类型表, 供后端使用
+  SaveValueTypeTable(ident);
 
   // 结束函数
   out << "}\n";
@@ -1289,7 +1308,13 @@ void ConstDefAST::DumpKoopa(std::ostream &out) const {
 
       for (int i = 0; i < total; ++i) {
         std::string elem_ptr = EmitArrayElemPtr(out, info.alloc_name, info.array_dims, i, value_type);
-        out << "  store " << flat[i] << ", " << elem_ptr << "\n";
+        if (value_type == ValueType::Float) {
+          // 浮点数组: flat[i] 是 bit pattern, 需要包装为 float IR 值
+          ValueResult float_val = EmitBinary(out, "add", "0", std::to_string(flat[i]), ValueType::Float);
+          out << "  store " << float_val.name << ", " << elem_ptr << "\n";
+        } else {
+          out << "  store " << flat[i] << ", " << elem_ptr << "\n";
+        }
       }
     }
     RegisterValueType(info.alloc_name, value_type);
@@ -1365,7 +1390,13 @@ void VarDefAST::DumpKoopa(std::ostream &out) const {
         // 逐元素 store (使用多级 getelemptr)
         for (int i = 0; i < total; ++i) {
           std::string elem_ptr = EmitArrayElemPtr(out, info.alloc_name, info.array_dims, i, value_type);
-          out << "  store " << flat[i] << ", " << elem_ptr << "\n";
+          if (value_type == ValueType::Float) {
+            // 浮点数组: flat[i] 是 bit pattern, 需要包装为 float IR 值
+            ValueResult float_val = EmitBinary(out, "add", "0", std::to_string(flat[i]), ValueType::Float);
+            out << "  store " << float_val.name << ", " << elem_ptr << "\n";
+          } else {
+            out << "  store " << flat[i] << ", " << elem_ptr << "\n";
+          }
         }
       }
       // 未初始化的局部数组不需要显式零初始化 (栈上默认为 0)

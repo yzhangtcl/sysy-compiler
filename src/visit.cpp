@@ -53,6 +53,9 @@ void AsmGenerator::VisitFunction(const koopa_raw_function_t &func, std::ostream 
   current_function_name_ = func_name;
   current_return_type_ = LookupFunctionReturnType(func_name);
 
+  // 恢复该函数的类型表 (前端在生成每个函数时保存了类型信息)
+  RestoreValueTypeTable(func_name);
+
   // 预处理: 计算栈布局
   PrepareFunction(func);
 
@@ -222,23 +225,69 @@ void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out)
   ValueType value_type = GetValueType(store.value);
 
   if (dest_type == ValueType::Float) {
-    if (value_type == ValueType::Float) {
+    // 检查目标 alloc 是否持有指针类型 (数组参数), 如果是则用整数 store
+    bool dest_holds_pointer = false;
+    if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+      dest_holds_pointer = IsPointerType(store.dest->ty->data.pointer.base);
+    }
+    if (dest_holds_pointer) {
+      // 目标是数组参数 (指针类型): 用整数 store, 不做浮点转换
+      LoadValue(store.value, "t0", out);
+      if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+        auto it = value_offsets_.find(store.dest);
+        assert(it != value_offsets_.end());
+        EmitStoreToOffset("t0", it->second, out);
+      } else {
+        LoadAddress(store.dest, "t1", out);
+        out << "  sw t0, 0(t1)\n";
+      }
+    } else if (value_type == ValueType::Float) {
       LoadFloatValue(store.value, "ft0", out);
+      if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+        auto it = value_offsets_.find(store.dest);
+        assert(it != value_offsets_.end());
+        EmitStoreToOffsetFloat("ft0", it->second, out);
+      } else {
+        LoadAddress(store.dest, "t1", out);
+        out << "  fsw ft0, 0(t1)\n";
+      }
     } else if (store.value->kind.tag == KOOPA_RVT_INTEGER) {
+      // 整数常量存入 float 标量目标: fcvt.s.w 将整数值转为浮点 (如 float x = 4)
       int32_t imm = VisitInteger(store.value->kind.data.integer);
       out << "  li t0, " << imm << "\n";
       out << "  fcvt.s.w ft0, t0\n";
+      if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+        auto it = value_offsets_.find(store.dest);
+        assert(it != value_offsets_.end());
+        EmitStoreToOffsetFloat("ft0", it->second, out);
+      } else {
+        LoadAddress(store.dest, "t1", out);
+        out << "  fsw ft0, 0(t1)\n";
+      }
+    } else if (store.value->kind.tag == KOOPA_RVT_FUNC_ARG_REF) {
+      // 标量浮点函数参数: 携带 float bit pattern, 用 fmv.w.x
+      LoadValue(store.value, "t0", out);
+      out << "  fmv.w.x ft0, t0\n";
+      if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+        auto it = value_offsets_.find(store.dest);
+        assert(it != value_offsets_.end());
+        EmitStoreToOffsetFloat("ft0", it->second, out);
+      } else {
+        LoadAddress(store.dest, "t1", out);
+        out << "  fsw ft0, 0(t1)\n";
+      }
     } else {
+      // 其他整数表达式存入 float 标量目标: fcvt.s.w (如 float x = int_var)
       LoadValue(store.value, "t0", out);
       out << "  fcvt.s.w ft0, t0\n";
-    }
-    if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
-      auto it = value_offsets_.find(store.dest);
-      assert(it != value_offsets_.end());
-      EmitStoreToOffsetFloat("ft0", it->second, out);
-    } else {
-      LoadAddress(store.dest, "t1", out);
-      out << "  fsw ft0, 0(t1)\n";
+      if (store.dest->kind.tag == KOOPA_RVT_ALLOC) {
+        auto it = value_offsets_.find(store.dest);
+        assert(it != value_offsets_.end());
+        EmitStoreToOffsetFloat("ft0", it->second, out);
+      } else {
+        LoadAddress(store.dest, "t1", out);
+        out << "  fsw ft0, 0(t1)\n";
+      }
     }
     return;
   }
@@ -465,9 +514,9 @@ void AsmGenerator::VisitCall(const koopa_raw_call_t &call, const koopa_raw_value
   // 执行 call 指令
   out << "  call " << callee_name << "\n";
 
-  // 将返回值 (如果有) 写回栈: getfloat 返回 IEEE 754 位模式到 fa0
+  // 将返回值 (如果有) 写回栈: float 返回值在 fa0, 其他在 a0
   if (!IsUnitType(value->ty)) {
-    if (callee == "getfloat") {
+    if (GetValueType(value) == ValueType::Float) {
       StoreFloatValue(value, "fa0", out);
     } else {
       StoreValue(value, "a0", out);
@@ -710,11 +759,13 @@ void AsmGenerator::LoadValue(const koopa_raw_value_t &value, const std::string &
 
 void AsmGenerator::LoadFloatValue(const koopa_raw_value_t &value, const std::string &reg,
                                   std::ostream &out) {
-  // 将值加载到浮点寄存器, 整数先转为浮点
+  // 将值加载到浮点寄存器
+  // 注意: Koopa IR 中 float 以 i32 bit pattern 形式承载,
+  // 因此 INTEGER 常量是 bit pattern, 需要用 fmv.w.x 而非 fcvt.s.w
   if (value->kind.tag == KOOPA_RVT_INTEGER) {
     int32_t imm = VisitInteger(value->kind.data.integer);
     out << "  li t0, " << imm << "\n";
-    out << "  fcvt.s.w " << reg << ", t0\n";
+    out << "  fmv.w.x " << reg << ", t0\n";
     return;
   }
   ValueType type = GetValueType(value);

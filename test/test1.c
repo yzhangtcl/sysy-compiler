@@ -1,9 +1,7 @@
+int localEnergy(int a[20][20], int x, int y, int depth) {
+    return localEnergy(a, x, y, depth - 1) ;
+}
 int main(){
-    float a = 1.26;         /* 定义为 a      */
-    float b = 2.1;          /* 定义为 b          */
-    a = 11.26;        /* a 重新赋值为 11.26   
-    b = 12.1;         /* b 重新赋值为 12.1    */
-    int c = 120;
-    int d= (a+b)*c+1.5999+10;
+    int d;
     return d;
 }

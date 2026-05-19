@@ -7,11 +7,12 @@ echo ""
 echo "return value: $val1"
 echo "-------------------------"
 ./build/compiler -riscv "./test/$1.c" -o "./test/$1.s" 
-riscv64-linux-gnu-gcc "./test/$1.s" -o "./test/$1_riscv" -L ./sysy-runtime-lib/build -lsysy -static
-qemu-riscv64 -L /usr/riscv64-linux-gnu "./test/$1_riscv" < "./test/$1.in" > "./test/$1_riscv.out"
+clang "./test/$1.s" -c -o "./test/$1.o" -target riscv32-unknown-linux-elf -march=rv32imf -mabi=ilp32f
+ld.lld -static "./test/$1.o" -L ./sysy-runtime-lib/build -lsysy -o "./test/$1_riscv32"
+qemu-riscv32 "./test/$1_riscv32" < "./test/$1.in" > "./test/$1_riscv32.out"
 val2=$?
-echo "riscv output:--------------"
-cat "./test/$1_riscv.out"
+echo "riscv32 output:--------------"
+cat "./test/$1_riscv32.out"
 echo ""
 echo "return value: $val2"
 echo "-------------------------"

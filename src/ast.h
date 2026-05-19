@@ -32,6 +32,9 @@ ValueType LookupFunctionReturnType(const std::string &name);
 void RegisterValueType(const std::string &name, ValueType type);
 void RegisterFunctionReturnType(const std::string &name, ValueType type);
 void ResetValueTypeTable();
+// 保存/恢复每个函数的类型表 (解决多函数编译时类型信息丢失问题)
+void SaveValueTypeTable(const std::string &func_name);
+void RestoreValueTypeTable(const std::string &func_name);
 
 // AST 基类: 所有语法树节点都能输出 Koopa IR 文本.
 class BaseAST {
