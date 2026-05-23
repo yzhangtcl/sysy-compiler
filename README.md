@@ -3,6 +3,17 @@
 
 ## Lv1-Lv2
 
+### 运行环境
+
+```
+docker pull maxxing/compiler-dev
+```
+
+
+```
+docker run -it --rm -v .\sysy-compiler:/root/compiler my-riscv-env bash
+```
+
 ### 项目结构
 
 给出了代码的主要框架：
