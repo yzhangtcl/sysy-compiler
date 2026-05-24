@@ -719,6 +719,10 @@ ValueType AsmGenerator::GetValueType(const koopa_raw_value_t &value) const {
     if (type == ValueType::Float) {
       return type;
     }
+    // 全局变量 (以 @ 开头) 在函数的类型表中可能没有记录, 需要查全局类型表
+    if (value->name[0] == '@') {
+      return LookupGlobalValueType(value->name);
+    }
     if (value->name[0] == '%' && value->name[1] == 'f') {
       return ValueType::Float;
     }

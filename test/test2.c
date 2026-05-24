@@ -1,13 +1,24 @@
-int main() {
-    float x = getfloat();
-    putint(x);
+int d,dd=12;
+float f,ff=1.123;
+int main(){
+    putint(d);
+    putch(32);
+    putint(dd);
+    putch(32);
+    putfloat(f);
+    putch(32);
+    putfloat(ff);
     putch(10);
-    putfloat(x);
-    putch(10);
-    int y=x;
-    putint(y);
-    putch(10);
-    putfloat(y);
-    putch(10);
-    return y;
+    d=123;
+    dd=d+dd;
+    f=1.23;
+    ff=f+ff;
+    putint(d);
+    putch(32);
+    putint(dd);
+    putch(32);
+    putfloat(f);
+    putch(32);
+    putfloat(ff);
+    return d;
 }

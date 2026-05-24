@@ -35,6 +35,8 @@ void ResetValueTypeTable();
 // 保存/恢复每个函数的类型表 (解决多函数编译时类型信息丢失问题)
 void SaveValueTypeTable(const std::string &func_name);
 void RestoreValueTypeTable(const std::string &func_name);
+// 查询全局变量类型 (不会被 ResetValueTypeTable 清除)
+ValueType LookupGlobalValueType(const std::string &name);
 
 // AST 基类: 所有语法树节点都能输出 Koopa IR 文本.
 class BaseAST {

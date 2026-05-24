@@ -438,6 +438,9 @@ void ResetValueTypeTable() {
 // 保存每个函数的类型表, 供后端使用
 static std::unordered_map<std::string, std::unordered_map<std::string, ValueType>> g_saved_type_tables;
 
+// 持久化全局变量类型表 (不会被 ResetValueTypeTable 清除)
+static std::unordered_map<std::string, ValueType> g_global_value_types;
+
 void SaveValueTypeTable(const std::string &func_name) {
   g_saved_type_tables[func_name] = g_value_types;
 }
@@ -449,6 +452,14 @@ void RestoreValueTypeTable(const std::string &func_name) {
   } else {
     g_value_types.clear();
   }
+}
+
+ValueType LookupGlobalValueType(const std::string &name) {
+  auto it = g_global_value_types.find(name);
+  if (it != g_global_value_types.end()) {
+    return it->second;
+  }
+  return ValueType::Int;
 }
 
 // 标记当前是否在全局作用域内
@@ -494,6 +505,14 @@ void CompUnitAST::DumpKoopa(std::ostream &out) const {
     }
   }
   g_in_global = false;
+
+  // 保存全局变量类型到持久化表 (不会被 ResetValueTypeTable 清除)
+  g_global_value_types.clear();
+  for (const auto &kv : g_value_types) {
+    if (!kv.first.empty() && kv.first[0] == '@') {
+      g_global_value_types[kv.first] = kv.second;
+    }
+  }
 
   // 5. 再输出所有函数定义
   for (const auto &item : items) {
