@@ -292,6 +292,25 @@ void AsmGenerator::VisitStore(const koopa_raw_store_t &store, std::ostream &out)
     return;
   }
 
+  // 当 value 是 Float 但 dest_type 未知时, 检查是否为全局标量变量
+  // 若是, 直接用 fsw 存储 float bit pattern, 避免 fcvt.w.s 截断
+  if (value_type == ValueType::Float && store.dest->kind.tag == KOOPA_RVT_GLOBAL_ALLOC) {
+    // 全局标量 (非数组): base 类型是 i32, 不是 array
+    bool is_scalar = true;
+    if (store.dest->ty->tag == KOOPA_RTT_POINTER) {
+      auto *base = store.dest->ty->data.pointer.base;
+      if (base->tag == KOOPA_RTT_ARRAY) {
+        is_scalar = false;
+      }
+    }
+    if (is_scalar) {
+      LoadFloatValue(store.value, "ft0", out);
+      LoadAddress(store.dest, "t1", out);
+      out << "  fsw ft0, 0(t1)\n";
+      return;
+    }
+  }
+
   if (value_type == ValueType::Float) {
     LoadFloatValue(store.value, "ft0", out);
     out << "  fcvt.w.s t0, ft0, rtz\n";

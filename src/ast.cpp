@@ -431,8 +431,15 @@ void RegisterFunctionReturnType(const std::string &name, ValueType type) {
   g_function_return_types[name] = type;
 }
 
+// 全局变量类型注册 (在 ResetValueTypeTable 时保留)
+static std::unordered_map<std::string, ValueType> g_global_value_types;
+
 void ResetValueTypeTable() {
   g_value_types.clear();
+  // 恢复全局变量类型注册, 确保后端能识别全局 float 变量
+  for (const auto &kv : g_global_value_types) {
+    g_value_types[kv.first] = kv.second;
+  }
 }
 
 // 保存每个函数的类型表, 供后端使用
@@ -448,6 +455,10 @@ void RestoreValueTypeTable(const std::string &func_name) {
     g_value_types = it->second;
   } else {
     g_value_types.clear();
+  }
+  // 确保全局变量类型注册不丢失 (与 ResetValueTypeTable 的恢复形成双保险)
+  for (const auto &kv : g_global_value_types) {
+    g_value_types[kv.first] = kv.second;
   }
 }
 
@@ -494,6 +505,9 @@ void CompUnitAST::DumpKoopa(std::ostream &out) const {
     }
   }
   g_in_global = false;
+
+  // 保存全局变量类型注册表 (供 ResetValueTypeTable 恢复)
+  g_global_value_types = g_value_types;
 
   // 5. 再输出所有函数定义
   for (const auto &item : items) {
